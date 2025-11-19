@@ -1,6 +1,15 @@
 [package]
-name = "newrs"
+name = "archetypes"
 version = "0.1.0"
 edition = "2024"
+default-run = "main"
+
+[[bin]]
+name = "main"
+path = "src/rust/main.rs"
+
+[build-dependencies]
+bindgen = "0.72.1"
+cc = "1.2.46"
 
 [dependencies]
