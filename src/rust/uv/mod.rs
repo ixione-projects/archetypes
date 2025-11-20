@@ -10,6 +10,9 @@ pub(crate) use r#loop::*;
 pub(crate) mod handle;
 pub(crate) use handle::*;
 
+pub(crate) mod request;
+pub(crate) use request::*;
+
 pub(crate) mod buf;
 pub(crate) use buf::*;
 

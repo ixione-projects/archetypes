@@ -1,6 +1,9 @@
 use std::{error::Error, ffi::CStr, fmt::Display};
 
-use crate::uv::{self, uv_err_name, uv_errno_t, uv_strerror};
+use crate::{
+    inners::{FromInner, IntoInner},
+    uv::{self, uv_err_name, uv_errno_t, uv_strerror},
+};
 
 #[allow(non_camel_case_types)]
 #[derive(Debug)]
@@ -92,8 +95,8 @@ pub enum Errno {
     ERRNO_MAX,
 }
 
-impl From<uv_errno_t> for Errno {
-    fn from(value: uv_errno_t) -> Self {
+impl FromInner<uv_errno_t> for Errno {
+    fn from_inner(value: uv_errno_t) -> Self {
         match value {
             uv::uv_errno_t_UV_E2BIG => Errno::E2BIG,
             uv::uv_errno_t_UV_EACCES => Errno::EACCES,
@@ -185,8 +188,8 @@ impl From<uv_errno_t> for Errno {
     }
 }
 
-impl Into<uv_errno_t> for &Errno {
-    fn into(self) -> uv_errno_t {
+impl IntoInner<uv_errno_t> for &Errno {
+    fn into_inner(self) -> uv_errno_t {
         match self {
             Errno::E2BIG => uv::uv_errno_t_UV_E2BIG,
             Errno::EACCES => uv::uv_errno_t_UV_EACCES,
@@ -286,7 +289,7 @@ impl Display for Errno {
 impl Errno {
     fn name(&self) -> String {
         unsafe {
-            CStr::from_ptr(uv_err_name(self.into()))
+            CStr::from_ptr(uv_err_name(self.into_inner()))
                 .to_str()
                 .unwrap()
                 .to_owned()
@@ -295,7 +298,7 @@ impl Errno {
 
     fn message(&self) -> String {
         unsafe {
-            CStr::from_ptr(uv_strerror(self.into()))
+            CStr::from_ptr(uv_strerror(self.into_inner()))
                 .to_str()
                 .unwrap()
                 .to_owned()

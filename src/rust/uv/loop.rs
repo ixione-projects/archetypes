@@ -1,4 +1,7 @@
-use crate::uv::{self, Errno, uv_default_loop, uv_errno_t, uv_loop_t, uv_run, uv_run_mode};
+use crate::{
+    inners::{FromInner, IntoInner},
+    uv::{self, Errno, uv_default_loop, uv_errno_t, uv_loop_t, uv_run, uv_run_mode},
+};
 
 #[allow(non_camel_case_types)]
 #[derive(Debug)]
@@ -8,8 +11,8 @@ pub enum RunMode {
     NOWAIT,
 }
 
-impl From<uv_run_mode> for RunMode {
-    fn from(value: uv_run_mode) -> Self {
+impl FromInner<uv_run_mode> for RunMode {
+    fn from_inner(value: uv_run_mode) -> Self {
         match value {
             uv::uv_run_mode_UV_RUN_DEFAULT => RunMode::DEFAULT,
             uv::uv_run_mode_UV_RUN_ONCE => RunMode::ONCE,
@@ -19,8 +22,8 @@ impl From<uv_run_mode> for RunMode {
     }
 }
 
-impl Into<uv_run_mode> for RunMode {
-    fn into(self) -> uv_run_mode {
+impl IntoInner<uv_run_mode> for RunMode {
+    fn into_inner(self) -> uv_run_mode {
         match self {
             RunMode::DEFAULT => uv::uv_run_mode_UV_RUN_DEFAULT,
             RunMode::ONCE => uv::uv_run_mode_UV_RUN_ONCE,
@@ -33,20 +36,20 @@ pub struct Loop {
     raw: *mut uv_loop_t,
 }
 
-impl From<*mut uv_loop_t> for Loop {
-    fn from(raw: *mut uv_loop_t) -> Self {
+impl FromInner<*mut uv_loop_t> for Loop {
+    fn from_inner(raw: *mut uv_loop_t) -> Self {
         Self { raw }
     }
 }
 
-impl Into<*mut uv_loop_t> for &Loop {
-    fn into(self) -> *mut uv_loop_t {
+impl IntoInner<*mut uv_loop_t> for &Loop {
+    fn into_inner(self) -> *mut uv_loop_t {
         self.raw
     }
 }
 
-impl Into<*mut uv_loop_t> for &mut Loop {
-    fn into(self) -> *mut uv_loop_t {
+impl IntoInner<*mut uv_loop_t> for &mut Loop {
+    fn into_inner(self) -> *mut uv_loop_t {
         self.raw
     }
 }
@@ -62,9 +65,9 @@ impl Loop {
     }
 
     pub fn run(&mut self, mode: RunMode) -> Result<(), Errno> {
-        let result = unsafe { uv_run(self.into(), mode.into()) };
+        let result = unsafe { uv_run(self.raw, mode.into_inner()) };
         if result < 0 {
-            Err(Errno::from(result as uv_errno_t))
+            Err(Errno::from_inner(result as uv_errno_t))
         } else {
             Ok(())
         }

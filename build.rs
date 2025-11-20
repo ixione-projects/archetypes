@@ -1,7 +1,6 @@
 use std::{env, path::PathBuf};
 
 extern crate bindgen;
-extern crate cc;
 
 fn main() {
     println!("cargo:rerun-if-changed=bindings.h");

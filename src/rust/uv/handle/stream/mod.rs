@@ -1,56 +1,69 @@
-pub(crate) mod write;
-pub(crate) use write::*;
-
 pub(crate) mod tty;
 pub(crate) use tty::*;
 
-use crate::uv::{Buf, Errno, uv_buf_t, uv_stream_t, uv_write};
+use crate::{
+    inners::{FromInner, IntoInner},
+    uv::{
+        Errno, IRequest, MutBuf, WriteCallback, WriteContext, WriteRequest, uv_stream_t, uv_write,
+        uv_write_cb,
+    },
+};
 
-pub struct Stream {
+pub struct StreamHandle {
     raw: *mut uv_stream_t,
 }
 
-pub trait StreamHandle {
-    fn into_stream(&self) -> Stream;
+pub trait IStreamHandle {
+    fn into_stream(&self) -> StreamHandle;
 
-    fn write(&mut self, req: &WriteRequest, bufs: &[Buf]) -> Result<(), Errno> {
-        let bs: Vec<uv_buf_t> = unsafe {
-            bufs.iter()
-                .map(|b| *(Into::<*mut uv_buf_t>::into(b)))
-                .collect()
+    fn write<CB>(&mut self, req: &WriteRequest, bufs: &[MutBuf], cb: CB) -> Result<(), Errno>
+    where
+        CB: Into<WriteCallback>,
+    {
+        let context = req.into_request().get_context();
+        let new_context = match context {
+            Some(mut context) => {
+                context.cb = Some(cb.into());
+                context
+            }
+            None => Box::new(WriteContext {
+                cb: Some(cb.into()),
+            }),
         };
+        req.into_request().set_context(new_context);
 
+        let bigbuf = bufs.into_inner();
         let result = unsafe {
             uv_write(
-                req.into(),
-                self.into_stream().into(),
-                bs.as_ptr(),
+                req.into_inner(),
+                self.into_stream().into_inner(),
+                bigbuf.as_ptr(),
                 bufs.len() as u32,
                 Some(uv_write_cb),
             )
         };
 
         if result < 0 {
-            Err(Errno::from(result))
+            Err(Errno::from_inner(result))
         } else {
             Ok(())
         }
     }
 }
 
-impl From<*mut uv_stream_t> for Stream {
-    fn from(raw: *mut uv_stream_t) -> Self {
+impl FromInner<*mut uv_stream_t> for StreamHandle {
+    fn from_inner(raw: *mut uv_stream_t) -> Self {
         Self { raw }
     }
 }
 
-impl Into<*mut uv_stream_t> for Stream {
-    fn into(self) -> *mut uv_stream_t {
+impl IntoInner<*mut uv_stream_t> for StreamHandle {
+    fn into_inner(self) -> *mut uv_stream_t {
         self.raw
     }
 }
 
-impl Stream {
+impl StreamHandle {
     pub(crate) fn from_raw(raw: *mut uv_stream_t) -> Self {
         Self { raw }
     }

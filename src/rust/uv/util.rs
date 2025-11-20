@@ -1,4 +1,7 @@
-use crate::uv::{self, uv_guess_handle, uv_handle_type};
+use crate::{
+    inners::FromInner,
+    uv::{self, uv_guess_handle, uv_handle_type},
+};
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, PartialEq, Eq)]
@@ -24,8 +27,8 @@ pub enum HandleType {
     HANDLE_TYPE_MAX,
 }
 
-impl From<uv_handle_type> for HandleType {
-    fn from(value: uv_handle_type) -> Self {
+impl FromInner<uv_handle_type> for HandleType {
+    fn from_inner(value: uv_handle_type) -> Self {
         match value {
             uv::uv_handle_type_UV_UNKNOWN_HANDLE => HandleType::UNKNOWN_HANDLE,
             uv::uv_handle_type_UV_ASYNC => HandleType::ASYNC,
@@ -52,5 +55,5 @@ impl From<uv_handle_type> for HandleType {
 }
 
 pub fn guess_handle(fd: i32) -> HandleType {
-    HandleType::from(unsafe { uv_guess_handle(fd) })
+    HandleType::from_inner(unsafe { uv_guess_handle(fd) })
 }
