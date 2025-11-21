@@ -27,6 +27,10 @@ pub enum HandleType {
     HANDLE_TYPE_MAX,
 }
 
+pub fn guess_handle(fd: i32) -> HandleType {
+    HandleType::from_inner(unsafe { uv_guess_handle(fd) })
+}
+
 impl FromInner<uv_handle_type> for HandleType {
     fn from_inner(value: uv_handle_type) -> Self {
         match value {
@@ -52,8 +56,4 @@ impl FromInner<uv_handle_type> for HandleType {
             _ => unreachable!(),
         }
     }
-}
-
-pub fn guess_handle(fd: i32) -> HandleType {
-    HandleType::from_inner(unsafe { uv_guess_handle(fd) })
 }

@@ -2,7 +2,7 @@ use std::alloc::{Layout, alloc, dealloc};
 
 use crate::{
     inners::{FromInner, IntoInner},
-    uv::{Errno, Loop, uv_errno_t, uv_timer_init, uv_timer_start, uv_timer_t},
+    uv::{Errno, Loop, uv_timer_init, uv_timer_start, uv_timer_t},
 };
 
 pub struct Timer {
@@ -32,7 +32,7 @@ impl Timer {
         let result = unsafe { uv_timer_init(r#loop.into_inner(), raw) };
         if result < 0 {
             unsafe { dealloc(raw as *mut u8, layout) };
-            return Err(Errno::from_inner(result as uv_errno_t));
+            return Err(Errno::from_inner(result));
         }
         Ok(Self { raw })
     }

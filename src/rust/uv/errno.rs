@@ -280,12 +280,6 @@ impl IntoInner<uv_errno_t> for &Errno {
     }
 }
 
-impl Display for Errno {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.name(), self.message())
-    }
-}
-
 impl Errno {
     fn name(&self) -> String {
         unsafe {
@@ -303,6 +297,12 @@ impl Errno {
                 .unwrap()
                 .to_owned()
         }
+    }
+}
+
+impl Display for Errno {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.name(), self.message())
     }
 }
 
