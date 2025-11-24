@@ -17,7 +17,7 @@ pub struct Loop {
 }
 
 impl Loop {
-    pub fn default() -> Result<Self, Errno> {
+    pub fn new_default() -> Result<Self, Errno> {
         let raw = unsafe { uv_default_loop() };
         if raw.is_null() {
             Err(Errno::ENOMEM)
@@ -37,6 +37,12 @@ impl Loop {
 
     pub fn alive(&self) -> bool {
         unsafe { uv_loop_alive(self.raw) != 0 }
+    }
+}
+
+impl Default for Loop {
+    fn default() -> Self {
+        Loop::new_default().unwrap()
     }
 }
 

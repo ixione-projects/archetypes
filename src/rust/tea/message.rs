@@ -15,3 +15,8 @@ impl Message {
         }
     }
 }
+
+#[derive(Debug, Clone)]
+pub enum Command {
+    Quit,
+}
