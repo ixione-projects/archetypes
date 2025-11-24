@@ -4,13 +4,14 @@ use crate::{
 };
 
 #[allow(non_camel_case_types)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum RunMode {
     DEFAULT,
     ONCE,
     NOWAIT,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct Loop {
     raw: *mut uv_loop_t,
 }

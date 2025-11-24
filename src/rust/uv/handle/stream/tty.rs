@@ -12,7 +12,7 @@ use crate::{
 };
 
 #[allow(non_camel_case_types)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum TTYMode {
     NORMAL,
     RAW,

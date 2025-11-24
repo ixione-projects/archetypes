@@ -15,13 +15,12 @@ use crate::{
 pub trait Buf: Copy + IntoInner<*const uv_buf_t> {
     fn from_raw(raw: *const uv_buf_t) -> Self;
 
-    // TODO: convert to str without rust taking ownership of the ptr
-    fn to_str(&self, len: usize) -> Result<&str, Box<dyn Error>> {
+    fn to_bytes(&self, len: usize) -> Result<&[u8], Box<dyn Error>> {
         let raw = self.into_inner();
         if raw.is_null() {
             Err(Box::new(NullPtrError()))
         } else {
-            unsafe { Ok(str::from_utf8(from_raw_parts((*raw).base as *mut u8, len))?) }
+            unsafe { Ok(from_raw_parts((*raw).base as *const u8, len)) }
         }
     }
 }
@@ -58,7 +57,7 @@ pub fn new_with_capacity<T: Buf>(baselen: usize) -> Result<T, Box<dyn Error>> {
 }
 
 // TODO: Clone should create a new allocation
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct ConstBuf {
     raw: *const uv_buf_t,
 }

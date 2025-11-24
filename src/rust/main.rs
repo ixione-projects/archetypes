@@ -1,103 +1,44 @@
 pub mod inners;
+pub mod tea;
 pub mod uv;
 
 use std::{
+    cell::RefCell,
     error::Error,
-    fmt::Display,
     io::{stdin, stdout},
     os::fd::AsRawFd,
+    rc::Rc,
 };
 
-use crate::uv::{
-    Buf, ConstBuf, Errno, Handle, HandleType, Loop, RunMode, WriteRequest, buf, guess_handle,
-    stream::{IStreamHandle, StreamHandle, TTYMode},
-};
-
-#[derive(Debug)]
-pub enum CLIError {
-    Usage(&'static str),
-    Internal(Errno),
-}
-
-impl Display for CLIError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl Error for CLIError {}
+use crate::tea::{Message, MessageType, Program};
 
 const USAGE: &str = "Usage: ./archetypes";
 
+pub struct Frame(String);
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let stdin = stdin().as_raw_fd();
-    let stdout = stdout().as_raw_fd();
-    if !ensure_tty(stdin, stdout) {
-        return Err(Box::new(CLIError::Usage(USAGE)));
-    }
+    let program = Rc::new(RefCell::new(
+        Program::init(
+            Frame(String::from("")),
+            stdin().as_raw_fd(),
+            stdout().as_raw_fd(),
+        )
+        .unwrap(),
+    ));
 
-    let mut r#loop = Loop::default()?;
-    let mut reader = r#loop.new_tty(stdout)?;
-    let mut writer = r#loop.new_tty(stdout)?;
-
-    let mut saw_ctrl_c = false;
-
-    reader.set_mode(TTYMode::RAW)?;
-    if let Err(err) = reader.read_start(
-        |_: &Handle<ConstBuf>, suggested_size| buf::new_with_capacity(suggested_size).ok(),
-        move |stream: &StreamHandle, nread: Result<isize, _>, buf: ConstBuf| match nread {
-            Ok(len) => {
-                if let Ok(str) = buf.to_str(len as usize) {
-                    if saw_ctrl_c && str.as_bytes()[0] == 03 {
-                        stream.into_stream().read_stop();
-                    } else if !saw_ctrl_c && str.as_bytes()[0] == 03 {
-                        let req = WriteRequest::new().unwrap();
-                        writer.write(
-                            req,
-                            &[ConstBuf::from("\n(Press ctrl-c again to exit.)\n")],
-                            (),
-                        );
-                        saw_ctrl_c = true;
-                    } else {
-                        if str.as_bytes()[0] == 13 {
-                            let req = WriteRequest::new().unwrap();
-                            writer.write(req, &[ConstBuf::from("\n")], ());
-                        } else {
-                            let req = WriteRequest::new().unwrap();
-                            writer.write(req, &[ConstBuf::from(str)], ());
-                        }
-                        saw_ctrl_c = false;
-                    }
-                }
+    let program_clone = program.clone();
+    let on_keypress = move |_: &Frame, msg: &Message| match msg {
+        Message::Keypress(keys) => {
+            if keys[0] == 03 {
+                program_clone.borrow_mut().quit();
             }
-            Err(err) => {
-                eprintln!("{}", err);
-                stream.into_stream().read_stop();
-            }
-        },
-    ) {
-        eprintln!("{}", err);
-        reader.read_stop();
-    }
+            println!("{}", String::from_utf8(keys.clone()).unwrap())
+        }
+    };
 
-    r#loop.run(RunMode::DEFAULT)?;
-    while r#loop.alive() {
-        r#loop.run(RunMode::DEFAULT)?;
-    }
+    program.borrow_mut().on(MessageType::Keypress, on_keypress);
 
-    reader.set_mode(TTYMode::NORMAL)?;
+    program.borrow_mut().run()?;
+
     Ok(())
-}
-
-fn ensure_tty(stdin: i32, stdout: i32) -> bool {
-    let (stdin_guess, stdout_guess) = (guess_handle(stdin), guess_handle(stdout));
-    if stdin_guess != HandleType::TTY || stdout_guess != HandleType::TTY {
-        eprintln!(
-            "expected a tty but found: stdin({:?}) and stdout({:?})",
-            stdin_guess, stdout_guess
-        );
-        false
-    } else {
-        true
-    }
 }

@@ -11,23 +11,25 @@ use crate::{
     },
 };
 
-impl<'a, B: Buf> super::IHandleContext<'a, B> for StreamContext<'a, B> {
-    fn into_handle_context(self) -> super::HandleContext<'a, B> {
+impl<'a> super::IHandleContext<'a> for StreamContext<'a> {
+    fn into_handle_context(self) -> super::HandleContext<'a> {
         super::HandleContext::from(self)
     }
 }
 
-impl<B: Buf> super::IHandle<B> for StreamHandle {
-    fn into_handle(self) -> super::Handle<B> {
+impl super::IHandle for StreamHandle {
+    fn into_handle(self) -> super::Handle {
         super::Handle::from_raw(self.raw as *mut uv_handle_t)
     }
 }
 
-pub struct ReadCallback<'a, B: Buf>(pub Box<dyn FnMut(&'a StreamHandle, Result<isize, Errno>, B)>);
+pub struct ReadCallback<'a>(
+    pub Box<dyn FnMut(&'a StreamHandle, Result<isize, Errno>, ConstBuf) + 'a>,
+);
 
-pub struct StreamContext<'a, B: Buf> {
-    alloc_cb: Option<AllocCallback<'a, B>>,
-    read_cb: Option<ReadCallback<'a, B>>,
+pub struct StreamContext<'a> {
+    alloc_cb: Option<AllocCallback<'a>>,
+    read_cb: Option<ReadCallback<'a>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -73,20 +75,15 @@ pub trait IStreamHandle: Copy {
         }
     }
 
-    // NOTE: `buf` is expected to be deallocated in the read_cb
-    fn read_start<'a, B: Buf + 'a, ACB, RCB>(
-        &mut self,
-        alloc_cb: ACB,
-        read_cb: RCB,
-    ) -> Result<(), Errno>
+    fn read_start<'a, ACB, RCB>(&mut self, alloc_cb: ACB, read_cb: RCB) -> Result<(), Errno>
     where
-        ACB: Into<AllocCallback<'a, B>>,
-        RCB: Into<ReadCallback<'a, B>>,
+        ACB: Into<AllocCallback<'a>>,
+        RCB: Into<ReadCallback<'a>>,
     {
         match self
             .into_stream()
             .into_handle()
-            .get_context::<StreamContext<B>>()
+            .get_context::<StreamContext>()
         {
             Some(ref mut context) => {
                 context.alloc_cb = Some(alloc_cb.into());
@@ -104,7 +101,7 @@ pub trait IStreamHandle: Copy {
         let result = unsafe {
             uv_read_start(
                 self.into_stream().into_inner(),
-                Some(uv_alloc_cb::<B>),
+                Some(uv_alloc_cb),
                 Some(uv_read_cb),
             )
         };
@@ -143,10 +140,7 @@ pub(crate) unsafe extern "C" fn uv_read_cb(
     buf: *const uv_buf_t,
 ) {
     let stream = StreamHandle::from_inner(stream);
-    if let Some(context) = stream
-        .into_handle()
-        .get_context::<StreamContext<ConstBuf>>()
-    {
+    if let Some(context) = stream.into_handle().get_context::<StreamContext>() {
         let status = if nread < 0 {
             Err(Errno::from_inner(nread as uv_errno_t))
         } else {
@@ -156,27 +150,27 @@ pub(crate) unsafe extern "C" fn uv_read_cb(
         if let Some(ref mut read_cb) = context.read_cb {
             read_cb.0(&stream, status, ConstBuf::from_raw(buf));
         }
-        // drop(Box::from_raw(buf as *mut uv_buf_t)); // FIXME: why should buf not be deallocated here?
+        // drop(Box::from_raw(buf as *mut uv_buf_t)); // FIXME: in read callback, buf should not be passing ownership of buf pointer to rust
     }
 }
 
-impl<'a, Fn, B: Buf> From<Fn> for ReadCallback<'a, B>
+impl<'a, Fn> From<Fn> for ReadCallback<'a>
 where
-    Fn: FnMut(&StreamHandle, Result<isize, Errno>, B) + 'static,
+    Fn: FnMut(&StreamHandle, Result<isize, Errno>, ConstBuf) + 'a,
 {
     fn from(value: Fn) -> Self {
         Self(Box::new(value))
     }
 }
 
-impl<'a, B: Buf> From<()> for ReadCallback<'a, B> {
+impl<'a> From<()> for ReadCallback<'a> {
     fn from(_: ()) -> Self {
         Self(Box::new(|_, _, _| {}))
     }
 }
 
-impl<'a, B: Buf> From<StreamContext<'a, B>> for super::HandleContext<'a, B> {
-    fn from(value: StreamContext<'a, B>) -> Self {
+impl<'a> From<StreamContext<'a>> for super::HandleContext<'a> {
+    fn from(value: StreamContext<'a>) -> Self {
         Self {
             alloc_cb: value.alloc_cb,
         }
