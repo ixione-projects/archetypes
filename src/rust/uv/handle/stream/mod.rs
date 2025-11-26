@@ -5,9 +5,9 @@ pub(crate) use tty::*;
 use crate::{
     inners::{FromInner, IntoInner},
     uv::{
-        AllocCallback, Buf, ConstBuf, Errno, IHandle, IRequest, WriteCallback, WriteContext,
-        WriteRequest, uv_alloc_cb, uv_buf_t, uv_errno_t, uv_handle_t, uv_read_start, uv_read_stop,
-        uv_stream_t, uv_write, uv_write_cb,
+        AllocCallback, Buf, CloseCallback, ConstBuf, Errno, IHandle, IRequest, WriteCallback,
+        WriteContext, WriteRequest, check::CheckContext, uv_alloc_cb, uv_buf_t, uv_errno_t,
+        uv_handle_t, uv_read_start, uv_read_stop, uv_stream_t, uv_tty_t, uv_write, uv_write_cb,
     },
 };
 
@@ -21,6 +21,10 @@ impl super::IHandle for StreamHandle {
     fn into_handle(self) -> super::Handle {
         super::Handle::from_inner(self.raw as *mut uv_handle_t)
     }
+
+    fn free_handle(self) {
+        self.free_stream();
+    }
 }
 
 pub struct ReadCallback<'a>(
@@ -29,6 +33,7 @@ pub struct ReadCallback<'a>(
 
 pub struct StreamContext<'a> {
     alloc_cb: Option<AllocCallback<'a>>,
+    close_cb: Option<CloseCallback<'a>>,
     read_cb: Option<ReadCallback<'a>>,
 }
 
@@ -39,6 +44,7 @@ pub struct StreamHandle {
 
 pub trait IStreamHandle: Copy {
     fn into_stream(self) -> StreamHandle;
+    fn free_stream(self);
 
     // NOTE: `bufs` is expected to be deallocated by the caller
     fn write<B: Buf, WCB>(
@@ -93,6 +99,7 @@ pub trait IStreamHandle: Copy {
             None => {
                 let new_context = StreamContext {
                     alloc_cb: Some(alloc_cb.into()),
+                    close_cb: None,
                     read_cb: Some(read_cb.into()),
                 };
                 self.into_stream().set_context(new_context);
@@ -122,6 +129,15 @@ pub trait IStreamHandle: Copy {
 impl IStreamHandle for StreamHandle {
     fn into_stream(self) -> StreamHandle {
         self
+    }
+
+    fn free_stream(self) {
+        match self.get_type() {
+            crate::uv::HandleType::TTY => {
+                TTYStream::from_inner(self.raw as *mut uv_tty_t).free_stream()
+            }
+            _ => panic!("unexpected handle type [{}]", self.get_type().name()),
+        }
     }
 }
 
@@ -168,6 +184,7 @@ impl<'a> From<StreamContext<'a>> for super::HandleContext<'a> {
     fn from(value: StreamContext<'a>) -> Self {
         Self {
             alloc_cb: value.alloc_cb,
+            close_cb: value.close_cb,
         }
     }
 }

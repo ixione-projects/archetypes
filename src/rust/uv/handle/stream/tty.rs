@@ -14,14 +14,19 @@ use crate::{
 #[allow(non_camel_case_types)]
 #[derive(Debug, PartialEq, Eq)]
 pub enum TTYMode {
-    NORMAL = 0,
-    RAW = 1,
-    IO = 2,
+    NORMAL,
+    RAW,
+    IO,
 }
 
 impl super::IStreamHandle for TTYStream {
     fn into_stream(self) -> super::StreamHandle {
         super::StreamHandle::from_inner(self.raw as *mut uv_stream_t)
+    }
+
+    fn free_stream(self) {
+        let layout = Layout::new::<uv_tty_t>();
+        unsafe { dealloc(self.raw as *mut u8, layout) };
     }
 }
 

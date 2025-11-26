@@ -1,14 +1,8 @@
 pub mod command;
-pub mod message;
-
-pub mod model;
-pub use model::*;
-
-pub mod key;
-pub use key::*;
-
 pub mod error;
-pub use error::*;
+pub mod key;
+pub mod message;
+pub mod model;
 
 use std::{
     cell::RefCell,
@@ -16,12 +10,18 @@ use std::{
     error::Error,
     io::{stdin, stdout},
     os::fd::AsRawFd,
+    sync::mpsc::channel,
 };
 
 use crate::{
-    tea::message::{Message, MessageType},
+    tea::{
+        error::TEAError,
+        message::{Message, MessageType},
+    },
     uv::{
-        Buf, ConstBuf, Handle, HandleType, IHandle, Loop, RunMode, buf, guess_handle,
+        Buf, ConstBuf, Handle, HandleType, IHandle, Loop, RunMode, buf,
+        check::CheckHandle,
+        guess_handle,
         stream::{IStreamHandle, StreamHandle, TTYMode, TTYStream},
     },
 };
@@ -99,32 +99,45 @@ impl<'a, M: Clone> Program<'a, M> {
 
     pub fn run(&self) -> Result<(), Box<dyn Error>> {
         self.r#in.borrow_mut().set_mode(TTYMode::RAW)?;
+        let mut messages_check = self.r#loop.borrow_mut().new_check()?;
+
+        let mut messages_check_stop_handle = messages_check.clone();
+        let mut read_stop_handle = self.r#in.borrow_mut().clone();
+
+        let (txmessage, rxmessage) = channel::<Message>();
+
+        let txmessage_keypress = txmessage.clone();
         self.r#in.borrow_mut().read_start(
             |_: &Handle, suggested_size| buf::new_with_capacity(suggested_size).ok(),
-            |stream: &StreamHandle, nread, buf: ConstBuf| {
+            move |_: &StreamHandle, nread, buf: ConstBuf| {
                 match nread {
                     Ok(len) => match buf.to_bytes(len as usize) {
-                        Ok(bytes) => {
-                            self.updates.borrow_mut().publish(
-                                ProgramContext {
-                                    width: self.width,
-                                    height: self.height,
-                                    cursor: self.cursor,
-                                    model: self.model.clone(),
-                                    quit: &mut || {
-                                        stream.into_stream().read_stop(); // copy
-                                    },
-                                },
-                                stream.get_loop(),
-                                Message::Keypress(bytes.to_owned()),
-                            );
-                        }
+                        Ok(bytes) => txmessage_keypress.send(Message::Keypress(bytes.to_owned())),
                         Err(err) => panic!("{}", err),
                     },
                     Err(err) => panic!("{}", err),
                 };
             },
         )?;
+
+        messages_check.start(move |handle: &CheckHandle| {
+            for received in rxmessage.try_iter() {
+                self.updates.borrow_mut().publish(
+                    ProgramContext {
+                        width: self.width,
+                        height: self.height,
+                        cursor: self.cursor,
+                        model: self.model.clone(),
+                        quit: &mut || {
+                            read_stop_handle.read_stop();
+                            messages_check_stop_handle.stop();
+                        },
+                    },
+                    handle.get_loop(),
+                    received,
+                );
+            }
+        })?;
 
         self.r#loop.borrow_mut().run(RunMode::DEFAULT)?;
         Ok(self.r#in.borrow_mut().set_mode(TTYMode::NORMAL)?)

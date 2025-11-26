@@ -67,7 +67,7 @@ where
 
 impl From<()> for WriteCallback {
     fn from(_: ()) -> Self {
-        Self(Box::new(|_, _| {}))
+        Self(Box::new(|_, _| ()))
     }
 }
 

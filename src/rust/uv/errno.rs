@@ -281,7 +281,7 @@ impl IntoInner<uv_errno_t> for &Errno {
 }
 
 impl Errno {
-    fn name(&self) -> String {
+    pub fn name(&self) -> String {
         unsafe {
             CStr::from_ptr(uv_err_name(self.into_inner()))
                 .to_str()
@@ -290,7 +290,7 @@ impl Errno {
         }
     }
 
-    fn message(&self) -> String {
+    pub fn message(&self) -> String {
         unsafe {
             CStr::from_ptr(uv_strerror(self.into_inner()))
                 .to_str()
