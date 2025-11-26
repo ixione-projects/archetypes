@@ -25,15 +25,20 @@ pub trait Buf: Copy + IntoInner<*const uv_buf_t> {
     }
 }
 
-pub fn new_from_bytes<T: Buf>(bytes: &[u8]) -> Result<T, Box<dyn Error>> {
-    let len = bytes.len();
-    let baselen = len + 1; // null terminator
+fn base_alloc(baselen: usize) -> Result<*mut c_char, Box<dyn Error>> {
     let layout = Layout::array::<c_char>(baselen)?;
     let base = unsafe { alloc(layout) as *mut c_char };
     if base.is_null() {
         return Err(Box::new(Errno::ENOMEM));
     }
+    Ok(base)
+}
 
+pub fn new_from_bytes<T: Buf>(bytes: &[u8]) -> Result<T, Box<dyn Error>> {
+    let len = bytes.len();
+    let baselen = len + 1; // null terminator
+
+    let base = base_alloc(baselen)?;
     unsafe {
         copy_nonoverlapping(bytes.as_ptr() as *mut i8, base, len);
         *base.offset(len as isize) = '\0' as i8;
@@ -45,11 +50,7 @@ pub fn new_from_bytes<T: Buf>(bytes: &[u8]) -> Result<T, Box<dyn Error>> {
 }
 
 pub fn new_with_capacity<T: Buf>(baselen: usize) -> Result<T, Box<dyn Error>> {
-    let layout = Layout::array::<c_char>(baselen)?;
-    let base = unsafe { alloc(layout) as *mut c_char };
-    if base.is_null() {
-        return Err(Box::new(Errno::ENOMEM));
-    }
+    let base = base_alloc(baselen)?;
 
     Ok(T::from_raw(Box::into_raw(Box::new(unsafe {
         uv_buf_init(base, baselen as u32)

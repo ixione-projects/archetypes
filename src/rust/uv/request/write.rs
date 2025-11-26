@@ -10,7 +10,7 @@ use crate::{
 
 impl super::IRequest<WriteContext> for WriteRequest {
     fn into_request(self) -> super::Request<WriteContext> {
-        super::Request::from_raw(self.raw as *mut uv_req_t)
+        super::Request::from_inner(self.raw as *mut uv_req_t)
     }
 }
 
@@ -33,14 +33,14 @@ impl WriteRequest {
         if raw.is_null() {
             Err(Errno::ENOMEM)
         } else {
-            return Ok(Self { raw });
+            Ok(Self { raw })
         }
     }
 }
 
 pub(crate) unsafe extern "C" fn uv_write_cb(req: *mut uv_write_t, status: c_int) {
-    let write = WriteRequest::from_inner(req);
-    if let Some(context) = write.into_request().get_context() {
+    let mut write = WriteRequest::from_inner(req);
+    if let Some(context) = write.get_context() {
         let status = if status < 0 {
             Err(Errno::from_inner(status))
         } else {
@@ -51,7 +51,7 @@ pub(crate) unsafe extern "C" fn uv_write_cb(req: *mut uv_write_t, status: c_int)
             write_cb.0(write, status);
         }
     }
-    write.into_request().free_context();
+    write.free_context();
     let layout = Layout::new::<uv_write_t>();
     unsafe { dealloc(req as *mut u8, layout) };
 }

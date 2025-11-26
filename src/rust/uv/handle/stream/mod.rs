@@ -19,7 +19,7 @@ impl<'a> super::IHandleContext<'a> for StreamContext<'a> {
 
 impl super::IHandle for StreamHandle {
     fn into_handle(self) -> super::Handle {
-        super::Handle::from_raw(self.raw as *mut uv_handle_t)
+        super::Handle::from_inner(self.raw as *mut uv_handle_t)
     }
 }
 
@@ -41,11 +41,16 @@ pub trait IStreamHandle: Copy {
     fn into_stream(self) -> StreamHandle;
 
     // NOTE: `bufs` is expected to be deallocated by the caller
-    fn write<B: Buf, WCB>(&mut self, req: WriteRequest, bufs: &[B], cb: WCB) -> Result<(), Errno>
+    fn write<B: Buf, WCB>(
+        &mut self,
+        mut req: WriteRequest,
+        bufs: &[B],
+        cb: WCB,
+    ) -> Result<(), Errno>
     where
         WCB: Into<WriteCallback>,
     {
-        match req.into_request().get_context() {
+        match req.get_context() {
             Some(context) => {
                 context.write_cb = Some(cb.into());
             }
@@ -53,7 +58,7 @@ pub trait IStreamHandle: Copy {
                 let new_context = WriteContext {
                     write_cb: Some(cb.into()),
                 };
-                req.into_request().set_context(new_context);
+                req.set_context(new_context);
             }
         };
 
@@ -80,11 +85,7 @@ pub trait IStreamHandle: Copy {
         ACB: Into<AllocCallback<'a>>,
         RCB: Into<ReadCallback<'a>>,
     {
-        match self
-            .into_stream()
-            .into_handle()
-            .get_context::<StreamContext>()
-        {
+        match self.into_stream().get_context::<StreamContext>() {
             Some(ref mut context) => {
                 context.alloc_cb = Some(alloc_cb.into());
                 context.read_cb = Some(read_cb.into());
@@ -94,7 +95,7 @@ pub trait IStreamHandle: Copy {
                     alloc_cb: Some(alloc_cb.into()),
                     read_cb: Some(read_cb.into()),
                 };
-                self.into_stream().into_handle().set_context(new_context);
+                self.into_stream().set_context(new_context);
             }
         };
 
@@ -128,19 +129,13 @@ pub(crate) fn init_stream(raw: *mut uv_stream_t) {
     super::init_handle(raw as *mut uv_handle_t);
 }
 
-impl StreamHandle {
-    pub(crate) fn from_raw(raw: *mut uv_stream_t) -> Self {
-        Self { raw }
-    }
-}
-
 pub(crate) unsafe extern "C" fn uv_read_cb(
     stream: *mut uv_stream_t,
     nread: isize,
     buf: *const uv_buf_t,
 ) {
     let stream = StreamHandle::from_inner(stream);
-    if let Some(context) = stream.into_handle().get_context::<StreamContext>() {
+    if let Some(context) = stream.get_context::<StreamContext>() {
         let status = if nread < 0 {
             Err(Errno::from_inner(nread as uv_errno_t))
         } else {

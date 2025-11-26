@@ -14,24 +14,11 @@ pub struct Request<T> {
     _marker: PhantomData<T>,
 }
 
-pub trait IRequest<T> {
-    fn into_request(self) -> Request<T>;
-}
+pub trait IRequest<C>: Copy {
+    fn into_request(self) -> Request<C>;
 
-pub(crate) fn init_request(raw: *mut uv_req_t) {
-    unsafe { uv_req_set_data(raw, null_mut()) };
-}
-
-impl<C> Request<C> {
-    pub(crate) fn from_raw(raw: *mut uv_req_t) -> Self {
-        Self {
-            raw,
-            _marker: PhantomData,
-        }
-    }
-
-    pub fn get_context(&self) -> Option<&mut C> {
-        let context = unsafe { uv_req_get_data(self.raw) };
+    fn get_context(&self) -> Option<&mut C> {
+        let context = unsafe { uv_req_get_data(self.into_request().raw) };
         if context.is_null() {
             None
         } else {
@@ -39,16 +26,25 @@ impl<C> Request<C> {
         }
     }
 
-    pub fn set_context(&mut self, context: C) {
-        unsafe { uv_req_set_data(self.raw, Box::into_raw(Box::new(context)) as *mut c_void) };
+    fn set_context(&mut self, context: C) {
+        unsafe {
+            uv_req_set_data(
+                self.into_request().raw,
+                Box::into_raw(Box::new(context)) as *mut c_void,
+            )
+        };
     }
 
-    pub fn free_context(&mut self) {
-        let context = unsafe { uv_req_get_data(self.raw) };
+    fn free_context(&mut self) {
+        let context = unsafe { uv_req_get_data(self.into_request().raw) };
         if !context.is_null() {
             unsafe { drop(Box::from_raw(context)) }
         }
     }
+}
+
+pub(crate) fn init_request(raw: *mut uv_req_t) {
+    unsafe { uv_req_set_data(raw, null_mut()) };
 }
 
 impl<T> FromInner<*mut uv_req_t> for Request<T> {

@@ -2,7 +2,10 @@ use std::{os::raw::c_void, ptr::null_mut};
 
 use crate::{
     inners::{FromInner, IntoInner},
-    uv::{MutBuf, uv_buf_t, uv_handle_get_data, uv_handle_set_data, uv_handle_t},
+    uv::{
+        Loop, MutBuf, uv_buf_t, uv_handle_get_data, uv_handle_get_loop, uv_handle_set_data,
+        uv_handle_t,
+    },
 };
 
 pub(crate) mod stream;
@@ -28,8 +31,30 @@ pub struct Handle {
     raw: *mut uv_handle_t,
 }
 
-pub trait IHandle {
+pub trait IHandle: Copy {
     fn into_handle(self) -> Handle;
+
+    fn get_loop(&self) -> Loop {
+        Loop::from_inner(unsafe { uv_handle_get_loop(self.into_handle().raw) })
+    }
+
+    fn get_context<'a, C: IHandleContext<'a>>(&self) -> Option<&mut C> {
+        let context = unsafe { uv_handle_get_data(self.into_handle().raw) };
+        if context.is_null() {
+            None
+        } else {
+            Some(unsafe { &mut *(context as *mut C) })
+        }
+    }
+
+    fn set_context<'a, C: IHandleContext<'a>>(&mut self, context: C) {
+        unsafe {
+            uv_handle_set_data(
+                self.into_handle().raw,
+                Box::into_raw(Box::new(context)) as *mut c_void,
+            )
+        };
+    }
 }
 
 impl IHandle for Handle {
@@ -40,25 +65,6 @@ impl IHandle for Handle {
 
 pub(crate) fn init_handle(raw: *mut uv_handle_t) {
     unsafe { uv_handle_set_data(raw, null_mut()) };
-}
-
-impl Handle {
-    pub(crate) fn from_raw(raw: *mut uv_handle_t) -> Self {
-        Self { raw }
-    }
-
-    pub fn get_context<'a, C: IHandleContext<'a>>(&self) -> Option<&mut C> {
-        let context = unsafe { uv_handle_get_data(self.raw) };
-        if context.is_null() {
-            None
-        } else {
-            Some(unsafe { &mut *(context as *mut C) })
-        }
-    }
-
-    pub fn set_context<'a, C: IHandleContext<'a>>(&mut self, context: C) {
-        unsafe { uv_handle_set_data(self.raw, Box::into_raw(Box::new(context)) as *mut c_void) };
-    }
 }
 
 pub(crate) unsafe extern "C" fn uv_alloc_cb(

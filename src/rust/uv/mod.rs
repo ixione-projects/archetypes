@@ -21,3 +21,6 @@ pub(crate) use util::*;
 
 pub(crate) mod errno;
 pub(crate) use errno::*;
+
+pub(crate) mod macros;
+pub(crate) use macros::*;
