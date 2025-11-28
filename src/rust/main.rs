@@ -5,7 +5,7 @@ pub mod uv;
 use std::error::Error;
 
 use crate::tea::{
-    Program, ProgramContext,
+    Program, ProgramContext, command,
     message::{Message, MessageType},
 };
 
@@ -17,12 +17,12 @@ pub struct Frame(i32);
 fn main() -> Result<(), Box<dyn Error>> {
     let program = Program::init(Frame(0)).unwrap();
 
-    program.on(
+    program.update(
         MessageType::Keypress,
         |_: &ProgramContext<Frame>, msg: &Message| {
             if let Message::Keypress(keys) = msg {
                 if keys[0] == 03 {
-                    Some(Message::Terminate)
+                    Some(command::Terminate.into())
                 } else {
                     println!("{}", String::from_utf8(keys.clone()).unwrap());
                     None
@@ -30,6 +30,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             } else {
                 None
             }
+        },
+    );
+
+    program.update(
+        MessageType::Terminate,
+        |_: &ProgramContext<Frame>, _: &Message| {
+            println!("terminated");
+            None
         },
     );
 

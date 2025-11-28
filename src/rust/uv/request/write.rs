@@ -8,16 +8,16 @@ use crate::{
     uv::{Errno, IRequest, uv_req_t, uv_write_t},
 };
 
-impl super::IRequest<WriteContext> for WriteRequest {
-    fn into_request(self) -> super::Request<WriteContext> {
+impl<'a> super::IRequest<WriteContext<'a>> for WriteRequest {
+    fn into_request(self) -> super::Request<WriteContext<'a>> {
         super::Request::from_inner(self.raw as *mut uv_req_t)
     }
 }
 
-pub struct WriteCallback(pub Box<dyn FnMut(WriteRequest, Result<(), Errno>)>);
+pub struct WriteCallback<'a>(pub Box<dyn FnMut(WriteRequest, Result<(), Errno>) + 'a>);
 
-pub struct WriteContext {
-    pub(crate) write_cb: Option<WriteCallback>,
+pub struct WriteContext<'a> {
+    pub(crate) write_cb: Option<WriteCallback<'a>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -56,16 +56,16 @@ pub(crate) unsafe extern "C" fn uv_write_cb(req: *mut uv_write_t, status: c_int)
     unsafe { dealloc(req as *mut u8, layout) };
 }
 
-impl<Fn> From<Fn> for WriteCallback
+impl<'a, Fn> From<Fn> for WriteCallback<'a>
 where
-    Fn: FnMut(WriteRequest, Result<(), Errno>) + 'static,
+    Fn: FnMut(WriteRequest, Result<(), Errno>) + 'a,
 {
     fn from(value: Fn) -> Self {
         Self(Box::new(value))
     }
 }
 
-impl From<()> for WriteCallback {
+impl<'a> From<()> for WriteCallback<'a> {
     fn from(_: ()) -> Self {
         Self(Box::new(|_, _| ()))
     }

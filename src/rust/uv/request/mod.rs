@@ -1,7 +1,10 @@
 pub(crate) mod write;
-use std::{marker::PhantomData, os::raw::c_void, ptr::null_mut};
-
 pub(crate) use write::*;
+
+pub(crate) mod work;
+pub(crate) use work::*;
+
+use std::{marker::PhantomData, os::raw::c_void, ptr::null_mut};
 
 use crate::{
     inners::{FromInner, IntoInner},

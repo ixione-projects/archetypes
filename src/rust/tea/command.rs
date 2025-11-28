@@ -1,9 +1,24 @@
-use crate::tea::message::Message;
+use crate::{
+    tea::{ProgramContext, ProgramInner, message::Message},
+    uv::stream::IStreamHandle,
+};
 
-pub type Command<'a> = &'a dyn FnMut() -> Message;
+pub trait Command<M> {
+    fn call(&mut self, context: &mut ProgramContext<M>, inner: &mut ProgramInner) -> Message;
+}
 
-pub const TERMINATE: Command = &terminate;
+pub struct Terminate;
+impl<M> Command<M> for Terminate {
+    fn call(&mut self, context: &mut ProgramContext<M>, inner: &mut ProgramInner) -> Message {
+        inner.r#in.read_stop();
 
-pub fn terminate() -> Message {
-    return Message::Terminate;
+        context.terminating = true;
+        Message::Terminate
+    }
+}
+
+impl<M> From<Terminate> for Box<dyn Command<M>> {
+    fn from(value: Terminate) -> Self {
+        Box::new(value)
+    }
 }

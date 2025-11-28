@@ -6,8 +6,8 @@ use crate::{
     inners::{FromInner, IntoInner},
     uv::{
         AllocCallback, Buf, CloseCallback, ConstBuf, Errno, IHandle, IRequest, WriteCallback,
-        WriteContext, WriteRequest, check::CheckContext, uv_alloc_cb, uv_buf_t, uv_errno_t,
-        uv_handle_t, uv_read_start, uv_read_stop, uv_stream_t, uv_tty_t, uv_write, uv_write_cb,
+        WriteContext, WriteRequest, uv_alloc_cb, uv_buf_t, uv_errno_t, uv_handle_t, uv_read_start,
+        uv_read_stop, uv_stream_t, uv_tty_t, uv_write, uv_write_cb,
     },
 };
 
@@ -47,22 +47,22 @@ pub trait IStreamHandle: Copy {
     fn free_stream(self);
 
     // NOTE: `bufs` is expected to be deallocated by the caller
-    fn write<B: Buf, WCB>(
+    fn write<'a, B: Buf, WCB>(
         &mut self,
         mut req: WriteRequest,
         bufs: &[B],
-        cb: WCB,
+        write_cb: WCB,
     ) -> Result<(), Errno>
     where
-        WCB: Into<WriteCallback>,
+        WCB: Into<WriteCallback<'a>>,
     {
         match req.get_context() {
             Some(context) => {
-                context.write_cb = Some(cb.into());
+                context.write_cb = Some(write_cb.into());
             }
             None => {
                 let new_context = WriteContext {
-                    write_cb: Some(cb.into()),
+                    write_cb: Some(write_cb.into()),
                 };
                 req.set_context(new_context);
             }
