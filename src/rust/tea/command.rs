@@ -1,23 +1,19 @@
-use crate::{
-    tea::{ProgramContext, ProgramInner, message::Message},
-    uv::stream::IStreamHandle,
-};
+use std::sync::Mutex;
 
-pub trait Command<M> {
-    fn call(&mut self, context: &mut ProgramContext<M>, inner: &mut ProgramInner) -> Message;
+use crate::tea::{ProgramContext, ProgramInner, message::Message, model::Model};
+
+pub trait Command<M: Model> {
+    fn call(&mut self, context: &Mutex<ProgramContext<M>>, inner: &Mutex<ProgramInner>) -> Message;
 }
 
 pub struct Terminate;
-impl<M> Command<M> for Terminate {
-    fn call(&mut self, context: &mut ProgramContext<M>, inner: &mut ProgramInner) -> Message {
-        inner.r#in.read_stop();
-
-        context.terminating = true;
+impl<M: Model> Command<M> for Terminate {
+    fn call(&mut self, _: &Mutex<ProgramContext<M>>, _: &Mutex<ProgramInner>) -> Message {
         Message::Terminate
     }
 }
 
-impl<M> From<Terminate> for Box<dyn Command<M>> {
+impl<M: Model> From<Terminate> for Box<dyn Command<M>> {
     fn from(value: Terminate) -> Self {
         Box::new(value)
     }

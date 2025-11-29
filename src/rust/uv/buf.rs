@@ -89,9 +89,15 @@ impl From<&str> for ConstBuf {
     }
 }
 
-impl From<&str> for MutBuf {
-    fn from(value: &str) -> Self {
-        new_from_bytes(value.as_bytes()).unwrap()
+impl From<Box<[u8]>> for ConstBuf {
+    fn from(value: Box<[u8]>) -> Self {
+        new_from_bytes(value.as_ref()).unwrap()
+    }
+}
+
+impl From<Box<[u8]>> for MutBuf {
+    fn from(value: Box<[u8]>) -> Self {
+        new_from_bytes(value.as_ref()).unwrap()
     }
 }
 

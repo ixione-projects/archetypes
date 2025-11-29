@@ -10,7 +10,10 @@ use std::{
     error::Error,
     io::{stdin, stdout},
     os::fd::AsRawFd,
-    sync::mpsc::{Sender, channel},
+    sync::{
+        Arc, Mutex,
+        mpsc::{Sender, channel},
+    },
 };
 
 use crate::{
@@ -18,33 +21,31 @@ use crate::{
         command::Command,
         error::TEAError,
         message::{Message, MessageType},
+        model::Model,
     },
     uv::{
-        Buf, ConstBuf, Handle, HandleType, IHandle, Loop, RunMode, WorkRequest, buf,
+        Buf, ConstBuf, Handle, HandleType, IHandle, Loop, RunMode, WorkRequest, WriteRequest, buf,
         check::CheckHandle,
         guess_handle,
         stream::{IStreamHandle, StreamHandle, TTYMode, TTYStream},
     },
 };
 
-pub struct UpdateHandler<'a, M>(
+pub struct UpdateHandler<'a, M: Model>(
     pub Box<dyn FnMut(&ProgramContext<M>, &Message) -> Option<Box<dyn Command<M>>> + 'a>,
 );
 
-pub struct UpdateBroker<'a, M> {
+pub struct UpdateBroker<'a, M: Model> {
     handlers: HashMap<MessageType, UpdateHandler<'a, M>>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ProgramContext<M> {
-    pub terminating: bool,
+pub struct ProgramContext<M: Model> {
     pub width: i32,
     pub height: i32,
     pub cursor: (usize, usize),
     pub model: RefCell<M>,
 }
 
-#[derive(Debug, Clone, Copy)]
 pub struct ProgramInner {
     r#loop: Loop,
     r#in: TTYStream,
@@ -52,9 +53,9 @@ pub struct ProgramInner {
     r#messages: CheckHandle,
 }
 
-pub struct Program<'a, M> {
-    context: RefCell<ProgramContext<M>>,
-    inner: RefCell<ProgramInner>,
+pub struct Program<'a, M: Model> {
+    context: Arc<Mutex<ProgramContext<M>>>,
+    inner: Arc<Mutex<ProgramInner>>,
     updates: RefCell<UpdateBroker<'a, M>>,
 }
 
@@ -66,22 +67,24 @@ fn new_tty_stream(r#loop: Loop, fd: i32) -> Result<TTYStream, TEAError> {
     Ok(r#loop.new_tty(fd)?)
 }
 
-impl<'a, M> UpdateBroker<'a, M> {
+impl<'a, M: Model> UpdateBroker<'a, M> {
     pub fn publish(
         &mut self,
-        context: &mut ProgramContext<M>,
-        inner: &mut ProgramInner,
+        context: Arc<Mutex<ProgramContext<M>>>,
+        inner: Arc<Mutex<ProgramInner>>,
         r#loop: Loop,
         txmessage: &Sender<Message>,
         msg: Message,
     ) {
         if let Some(handler) = self.handlers.get_mut(&msg.r#type()) {
-            if let Some(mut cmd) = handler.0(context, &msg) {
+            if let Some(mut cmd) = handler.0(&context.lock().unwrap(), &msg) {
                 let req = WorkRequest::new().unwrap();
+                let work_context = context.clone();
+                let inner_context = inner.clone();
                 r#loop.queue_work(
                     req,
                     |_| {
-                        txmessage.send(cmd.call(context, inner));
+                        txmessage.send(cmd.call(&work_context, &inner_context));
                     },
                     (),
                 );
@@ -94,7 +97,7 @@ impl<'a, M> UpdateBroker<'a, M> {
     }
 }
 
-impl<'a, M> Program<'a, M> {
+impl<'a, M: Model> Program<'a, M> {
     pub fn init(model: M) -> Result<Self, Box<dyn Error>> {
         let r#loop = Loop::new_default()?;
         let r#in = new_tty_stream(r#loop, stdin().as_raw_fd())?;
@@ -103,19 +106,18 @@ impl<'a, M> Program<'a, M> {
         let (width, height) = out.get_winsize()?;
 
         Ok(Self {
-            context: RefCell::new(ProgramContext {
-                terminating: false,
+            context: Arc::new(Mutex::new(ProgramContext {
                 width: width.max(80),
                 height: height.max(45),
                 cursor: (0, 0),
                 model: RefCell::new(model),
-            }),
-            inner: RefCell::new(ProgramInner {
+            })),
+            inner: Arc::new(Mutex::new(ProgramInner {
                 r#loop,
                 r#in,
                 r#out,
                 r#messages,
-            }),
+            })),
             updates: Default::default(),
         })
     }
@@ -123,11 +125,13 @@ impl<'a, M> Program<'a, M> {
     pub fn run(&self) -> Result<(), Box<dyn Error>> {
         let (txmessage, rxmessage) = channel::<Message>();
 
-        let mut read_start_handle = self.inner.borrow_mut().r#in.clone();
+        let mut read_start_handle = self.inner.lock().unwrap().r#in.clone();
+        let mut read_stop_handle = self.inner.lock().unwrap().r#in.clone();
         let txmessage_keypress = txmessage.clone();
         read_start_handle.read_start(
             |_: &Handle, suggested_size| buf::new_with_capacity(suggested_size).ok(),
-            move |_: &StreamHandle, nread, buf: ConstBuf| {
+            |_: &StreamHandle, nread, buf: ConstBuf| {
+                // TODO: handle err
                 let _ = match nread {
                     Ok(len) => match buf.to_bytes(len as usize) {
                         Ok(bytes) => txmessage_keypress.send(Message::Keypress(bytes.to_owned())),
@@ -138,29 +142,45 @@ impl<'a, M> Program<'a, M> {
             },
         )?;
 
-        let mut messages_start_handle = self.inner.borrow_mut().messages.clone();
-        let mut messages_stop_handle = self.inner.borrow_mut().messages.clone();
+        let mut messages_start_handle = self.inner.lock().unwrap().messages.clone();
+        let mut messages_stop_handle = self.inner.lock().unwrap().messages.clone();
+        let mut messages_write = self.inner.lock().unwrap().out.clone();
         let txmessage_command = txmessage.clone();
-        let mut messages_program_inner = self.inner.borrow_mut().clone();
-        messages_start_handle.start(move |handle: &CheckHandle| {
+        messages_start_handle.start(|handle: &CheckHandle| {
+            let mut terminating = false;
             for message in rxmessage.try_iter() {
+                if let Message::Terminate = message {
+                    terminating = true;
+                }
+
                 self.updates.borrow_mut().publish(
-                    &mut self.context.borrow_mut(),
-                    &mut messages_program_inner,
+                    self.context.clone(),
+                    self.inner.clone(),
                     handle.get_loop(),
                     &txmessage_command,
                     message,
                 );
             }
 
-            if self.context.borrow().terminating {
+            if terminating {
+                read_stop_handle.read_stop();
                 messages_stop_handle.stop();
             }
+
+            let req = WriteRequest::new().unwrap();
+            messages_write.write(
+                req,
+                &[
+                    ConstBuf::from(self.context.lock().unwrap().model.borrow().view()),
+                    ConstBuf::from("\r"),
+                ],
+                (),
+            );
         })?;
 
-        self.inner.borrow_mut().r#in.set_mode(TTYMode::RAW)?;
-        self.inner.borrow_mut().r#loop.run(RunMode::DEFAULT)?;
-        Ok(self.inner.borrow_mut().r#in.set_mode(TTYMode::NORMAL)?)
+        self.inner.lock().unwrap().r#in.set_mode(TTYMode::RAW)?;
+        self.inner.lock().unwrap().r#loop.run(RunMode::DEFAULT)?;
+        Ok(self.inner.lock().unwrap().r#in.set_mode(TTYMode::NORMAL)?)
     }
 
     pub fn update<UH>(&self, r#type: MessageType, handler: UH)
@@ -171,7 +191,18 @@ impl<'a, M> Program<'a, M> {
     }
 }
 
-impl<'a, M> Default for UpdateBroker<'a, M> {
+impl Clone for ProgramInner {
+    fn clone(&self) -> Self {
+        Self {
+            r#loop: self.r#loop.clone(),
+            r#in: self.r#in.clone(),
+            r#out: self.r#out.clone(),
+            r#messages: self.r#messages.clone(),
+        }
+    }
+}
+
+impl<'a, M: Model> Default for UpdateBroker<'a, M> {
     fn default() -> Self {
         Self {
             handlers: Default::default(),
@@ -179,7 +210,7 @@ impl<'a, M> Default for UpdateBroker<'a, M> {
     }
 }
 
-impl<'a, Fn, M> From<Fn> for UpdateHandler<'a, M>
+impl<'a, Fn, M: Model> From<Fn> for UpdateHandler<'a, M>
 where
     Fn: FnMut(&ProgramContext<M>, &Message) -> Option<Box<dyn Command<M>>> + 'a,
 {

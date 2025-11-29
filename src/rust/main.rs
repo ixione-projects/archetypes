@@ -7,37 +7,36 @@ use std::error::Error;
 use crate::tea::{
     Program, ProgramContext, command,
     message::{Message, MessageType},
+    model::Model,
 };
 
-const USAGE: &str = "Usage: ./archetypes";
+#[derive(Clone)]
+pub struct Frame(Vec<u8>);
 
-#[derive(Debug, Clone, Copy)]
-pub struct Frame(i32);
+impl Model for Frame {
+    fn view(&self) -> Box<[u8]> {
+        self.0.clone().into_boxed_slice()
+    }
+}
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let program = Program::init(Frame(0)).unwrap();
+    let program = Program::init(Frame(Vec::new())).unwrap();
 
     program.update(
         MessageType::Keypress,
-        |_: &ProgramContext<Frame>, msg: &Message| {
+        |program: &ProgramContext<Frame>, msg: &Message| {
             if let Message::Keypress(keys) = msg {
                 if keys[0] == 03 {
                     Some(command::Terminate.into())
                 } else {
-                    println!("{}", String::from_utf8(keys.clone()).unwrap());
+                    for key in keys {
+                        program.model.borrow_mut().0.push(*key);
+                    }
                     None
                 }
             } else {
                 None
             }
-        },
-    );
-
-    program.update(
-        MessageType::Terminate,
-        |_: &ProgramContext<Frame>, _: &Message| {
-            println!("terminated");
-            None
         },
     );
 
