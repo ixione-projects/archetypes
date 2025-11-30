@@ -74,7 +74,7 @@ pub trait IStreamHandle: Copy {
                 req.into_inner(),
                 self.into_stream().into_inner(),
                 bigbuf.as_ptr(),
-                bufs.len() as u32,
+                bigbuf.len() as u32,
                 Some(uv_write_cb),
             )
         };

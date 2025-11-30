@@ -10,6 +10,7 @@ use std::{
     error::Error,
     io::{stdin, stdout},
     os::fd::AsRawFd,
+    str::from_utf8,
     sync::{
         Arc, Mutex,
         mpsc::{Sender, channel},
@@ -24,7 +25,8 @@ use crate::{
         model::Model,
     },
     uv::{
-        Buf, ConstBuf, Handle, HandleType, IHandle, Loop, RunMode, WorkRequest, WriteRequest, buf,
+        Buf, ConstBuf, FileSystemRequest, Handle, HandleType, IHandle, Loop, MutBuf, RunMode,
+        WorkRequest, WriteRequest, buf,
         check::CheckHandle,
         guess_handle,
         stream::{IStreamHandle, StreamHandle, TTYMode, TTYStream},
@@ -42,7 +44,8 @@ pub struct UpdateBroker<'a, M: Model> {
 pub struct ProgramContext<M: Model> {
     pub width: i32,
     pub height: i32,
-    pub cursor: (usize, usize),
+    pub home: (isize, isize),
+    pub cursor: (isize, isize),
     pub model: RefCell<M>,
 }
 
@@ -81,13 +84,17 @@ impl<'a, M: Model> UpdateBroker<'a, M> {
                 let req = WorkRequest::new().unwrap();
                 let work_context = context.clone();
                 let inner_context = inner.clone();
-                r#loop.queue_work(
-                    req,
-                    |_| {
-                        txmessage.send(cmd.call(&work_context, &inner_context));
-                    },
-                    (),
-                );
+                r#loop
+                    .queue_work(
+                        req,
+                        |_| {
+                            txmessage
+                                .send(cmd.call(&work_context, &inner_context))
+                                .unwrap();
+                        },
+                        (),
+                    )
+                    .unwrap();
             }
         }
     }
@@ -100,15 +107,18 @@ impl<'a, M: Model> UpdateBroker<'a, M> {
 impl<'a, M: Model> Program<'a, M> {
     pub fn init(model: M) -> Result<Self, Box<dyn Error>> {
         let r#loop = Loop::new_default()?;
-        let r#in = new_tty_stream(r#loop, stdin().as_raw_fd())?;
-        let out = new_tty_stream(r#loop, stdout().as_raw_fd())?;
+        let stdin = stdin().as_raw_fd();
+        let stdout = stdout().as_raw_fd();
+        let r#in = new_tty_stream(r#loop, stdin)?;
+        let out = new_tty_stream(r#loop, stdout)?;
         let messages = r#loop.new_check()?;
         let (width, height) = out.get_winsize()?;
 
-        Ok(Self {
+        let program = Self {
             context: Arc::new(Mutex::new(ProgramContext {
                 width: width.max(80),
                 height: height.max(45),
+                home: (0, 0),
                 cursor: (0, 0),
                 model: RefCell::new(model),
             })),
@@ -119,7 +129,60 @@ impl<'a, M: Model> Program<'a, M> {
                 r#messages,
             })),
             updates: Default::default(),
-        })
+        };
+
+        // TODO: clean-up
+        program.inner.lock().unwrap().r#in.set_mode(TTYMode::RAW)?;
+        let read_handle = program.inner.lock().unwrap().r#loop.clone();
+        let report: MutBuf = buf::new_with_capacity(32).unwrap();
+        if let Err(err) = program.inner.lock().unwrap().r#loop.fs_write(
+            FileSystemRequest::new().unwrap(),
+            stdout,
+            &[ConstBuf::from("\x1B[6n")],
+            -1,
+            |_: FileSystemRequest| {
+                if let Err(err) = read_handle.fs_read(
+                    FileSystemRequest::new().unwrap(),
+                    stdin,
+                    &[report],
+                    -1,
+                    |read_req: FileSystemRequest| {
+                        if read_req.result() != 7 {
+                            panic!("get_tty_home: invalid nread [{:?}]", read_req.result());
+                        }
+
+                        let context_ref = program.context.clone();
+                        let mut context = context_ref.lock().unwrap();
+                        let (mut s, mut c) = (2, 2);
+                        while report[c].is_ascii_digit() {
+                            c += 1;
+                        }
+                        context.home.0 = from_utf8(&report[s..c]).unwrap().parse().unwrap();
+                        context.cursor.0 = from_utf8(&report[s..c]).unwrap().parse().unwrap();
+                        (s, c) = (c + 1, c + 1);
+                        while report[c].is_ascii_digit() {
+                            c += 1;
+                        }
+                        context.home.1 = from_utf8(&report[s..c]).unwrap().parse().unwrap();
+                        context.cursor.1 = from_utf8(&report[s..c]).unwrap().parse().unwrap();
+                    },
+                ) {
+                    panic!("{:?}", TEAError::InternalUVError(err));
+                }
+            },
+        ) {
+            panic!("{:?}", TEAError::InternalUVError(err));
+        };
+
+        program.inner.lock().unwrap().r#loop.run(RunMode::DEFAULT)?;
+        program
+            .inner
+            .lock()
+            .unwrap()
+            .r#in
+            .set_mode(TTYMode::NORMAL)?;
+
+        Ok(program)
     }
 
     pub fn run(&self) -> Result<(), Box<dyn Error>> {
@@ -167,15 +230,17 @@ impl<'a, M: Model> Program<'a, M> {
                 messages_stop_handle.stop();
             }
 
-            let req = WriteRequest::new().unwrap();
-            messages_write.write(
-                req,
-                &[
-                    ConstBuf::from(self.context.lock().unwrap().model.borrow().view()),
-                    ConstBuf::from("\r"),
-                ],
-                (),
-            );
+            let context = self.context.lock().unwrap();
+            messages_write
+                .write(
+                    WriteRequest::new().unwrap(),
+                    &[
+                        ConstBuf::from(format!("\x1B[{};{}H", context.home.0, context.home.1)),
+                        ConstBuf::from(context.model.borrow().view()),
+                    ],
+                    (),
+                )
+                .unwrap();
         })?;
 
         self.inner.lock().unwrap().r#in.set_mode(TTYMode::RAW)?;
