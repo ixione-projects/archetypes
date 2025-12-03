@@ -6,68 +6,68 @@ use std::{
 
 use crate::{
     inners::{FromInner, IntoInner},
-    uv::{Errno, IRequest, uv_req_t, uv_write_t},
+    uv::{Errno, IRequest, uv_req_t, uv_shutdown_t},
 };
 
 // super
 
-impl<'a> super::IRequestContext for WriteContext<'a> {
+impl<'a> super::IRequestContext for ShutdownContext<'a> {
     fn into_request_context(self) -> super::RequestContext {
         super::RequestContext::from(self)
     }
 }
 
-impl<'a> super::IRequest for WriteRequest {
+impl<'a> super::IRequest for ShutdownRequest {
     fn into_request(self) -> super::Request {
         super::Request::from_inner(self.raw as *mut uv_req_t)
     }
 
     fn drop_request(self) {
-        let layout = Layout::new::<uv_write_t>();
+        let layout = Layout::new::<uv_shutdown_t>();
         unsafe { dealloc(self.raw as *mut u8, layout) };
     }
 }
 
 // type
 
-pub struct WriteCallback<'a>(pub Box<dyn FnMut(WriteRequest, Result<(), Errno>) + 'a>);
+pub struct ShutdownCallback<'a>(pub Box<dyn FnMut(ShutdownRequest, Result<(), Errno>) + 'a>);
 
 #[repr(C)]
-pub struct WriteContext<'a> {
+pub struct ShutdownContext<'a> {
     pub(crate) data: *mut c_void,
-    pub(crate) write_cb: Option<WriteCallback<'a>>,
+    pub(crate) shutdown_cb: Option<ShutdownCallback<'a>>,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct WriteRequest {
-    raw: *mut uv_write_t,
+pub struct ShutdownRequest {
+    raw: *mut uv_shutdown_t,
 }
 
 // fn
 
-pub(crate) unsafe extern "C" fn uv_write_cb(req: *mut uv_write_t, status: c_int) {
-    let write = WriteRequest::from_inner(req);
-    if let Some(context) = write.into_request().get_context::<WriteContext>() {
+pub(crate) unsafe extern "C" fn uv_shutdown_cb(req: *mut uv_shutdown_t, status: c_int) {
+    let shutdown = ShutdownRequest::from_inner(req);
+    if let Some(context) = shutdown.into_request().get_context::<ShutdownContext>() {
         let status = if status < 0 {
             Err(Errno::from_inner(status))
         } else {
             Ok(())
         };
 
-        if let Some(ref mut write_cb) = context.write_cb {
-            write_cb.0(write, status);
+        if let Some(ref mut shutdown_cb) = context.shutdown_cb {
+            shutdown_cb.0(shutdown, status);
         }
     }
-    write.into_request().drop_context();
-    write.drop_request();
+    shutdown.into_request().drop_context();
+    shutdown.drop_request();
 }
 
 // impl
 
-impl WriteRequest {
+impl ShutdownRequest {
     pub fn new() -> Result<Self, Errno> {
-        let layout = Layout::new::<uv_write_t>();
-        let raw = unsafe { alloc(layout) as *mut uv_write_t };
+        let layout = Layout::new::<uv_shutdown_t>();
+        let raw = unsafe { alloc(layout) as *mut uv_shutdown_t };
         if raw.is_null() {
             return Err(Errno::ENOMEM);
         }
@@ -78,7 +78,7 @@ impl WriteRequest {
     }
     pub fn get_data<D: 'static>(&self) -> Option<&mut D> {
         let request = self.into_request();
-        if let Some(context) = unsafe { request.get_context::<WriteContext>() } {
+        if let Some(context) = unsafe { request.get_context::<ShutdownContext>() } {
             Some(unsafe {
                 (*(context.data as *mut dyn Any))
                     .downcast_mut::<D>()
@@ -96,12 +96,12 @@ impl WriteRequest {
     pub fn set_data<D: 'static>(&mut self, data: D) {
         let data = Box::into_raw(Box::new(data)) as *mut c_void;
         let mut request = self.into_request();
-        match unsafe { request.get_context::<WriteContext>() } {
+        match unsafe { request.get_context::<ShutdownContext>() } {
             Some(context) => context.data = data,
             None => {
-                request.set_context(WriteContext {
+                request.set_context(ShutdownContext {
                     data,
-                    write_cb: None,
+                    shutdown_cb: None,
                 });
             }
         }
@@ -110,22 +110,22 @@ impl WriteRequest {
 
 // trait
 
-impl<'a> From<WriteContext<'a>> for super::RequestContext {
-    fn from(value: WriteContext<'a>) -> Self {
+impl<'a> From<ShutdownContext<'a>> for super::RequestContext {
+    fn from(value: ShutdownContext<'a>) -> Self {
         Self { data: value.data }
     }
 }
 
-impl<'a, Fn> From<Fn> for WriteCallback<'a>
+impl<'a, Fn> From<Fn> for ShutdownCallback<'a>
 where
-    Fn: FnMut(WriteRequest, Result<(), Errno>) + 'a,
+    Fn: FnMut(ShutdownRequest, Result<(), Errno>) + 'a,
 {
     fn from(value: Fn) -> Self {
         Self(Box::new(value))
     }
 }
 
-impl<'a> From<()> for WriteCallback<'a> {
+impl<'a> From<()> for ShutdownCallback<'a> {
     fn from(_: ()) -> Self {
         Self(Box::new(|_, _| ()))
     }
@@ -133,14 +133,14 @@ impl<'a> From<()> for WriteCallback<'a> {
 
 // from_inner/into_inner
 
-impl FromInner<*mut uv_write_t> for WriteRequest {
-    fn from_inner(raw: *mut uv_write_t) -> Self {
+impl FromInner<*mut uv_shutdown_t> for ShutdownRequest {
+    fn from_inner(raw: *mut uv_shutdown_t) -> Self {
         Self { raw }
     }
 }
 
-impl IntoInner<*mut uv_write_t> for WriteRequest {
-    fn into_inner(self) -> *mut uv_write_t {
+impl IntoInner<*mut uv_shutdown_t> for ShutdownRequest {
+    fn into_inner(self) -> *mut uv_shutdown_t {
         self.raw
     }
 }

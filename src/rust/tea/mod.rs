@@ -1,6 +1,6 @@
 pub mod command;
 pub mod error;
-pub mod key;
+pub mod keypress;
 pub mod message;
 pub mod model;
 
@@ -25,11 +25,11 @@ use crate::{
         model::Model,
     },
     uv::{
-        Buf, ConstBuf, FileSystemRequest, Handle, HandleType, IHandle, Loop, MutBuf, RunMode,
-        WorkRequest, WriteRequest, buf,
+        Buf, FileSystemRequest, Handle, HandleType, IHandle, Loop, RunMode, WorkRequest,
+        WriteRequest,
         check::CheckHandle,
         guess_handle,
-        stream::{IStreamHandle, StreamHandle, TTYMode, TTYStream},
+        stream::{IStreamHandle, Mode, StreamHandle, TTYStream},
     },
 };
 
@@ -106,7 +106,7 @@ impl<'a, M: Model> UpdateBroker<'a, M> {
 
 impl<'a, M: Model> Program<'a, M> {
     pub fn init(model: M) -> Result<Self, Box<dyn Error>> {
-        let r#loop = Loop::new_default()?;
+        let r#loop = Loop::default();
         let stdin = stdin().as_raw_fd();
         let stdout = stdout().as_raw_fd();
         let r#in = new_tty_stream(r#loop, stdin)?;
@@ -132,13 +132,13 @@ impl<'a, M: Model> Program<'a, M> {
         };
 
         // TODO: clean-up
-        program.inner.lock().unwrap().r#in.set_mode(TTYMode::RAW)?;
+        program.inner.lock().unwrap().r#in.set_mode(Mode::RAW)?;
         let read_handle = program.inner.lock().unwrap().r#loop.clone();
-        let report: MutBuf = buf::new_with_capacity(32).unwrap();
+        let report = Buf::new_with_capacity(32).unwrap();
         if let Err(err) = program.inner.lock().unwrap().r#loop.fs_write(
             FileSystemRequest::new().unwrap(),
             stdout,
-            &[ConstBuf::from("\x1B[6n")],
+            &[Buf::new("\x1B[6n").unwrap()],
             -1,
             |_: FileSystemRequest| {
                 if let Err(err) = read_handle.fs_read(
@@ -175,12 +175,7 @@ impl<'a, M: Model> Program<'a, M> {
         };
 
         program.inner.lock().unwrap().r#loop.run(RunMode::DEFAULT)?;
-        program
-            .inner
-            .lock()
-            .unwrap()
-            .r#in
-            .set_mode(TTYMode::NORMAL)?;
+        program.inner.lock().unwrap().r#in.set_mode(Mode::NORMAL)?;
 
         Ok(program)
     }
@@ -192,14 +187,14 @@ impl<'a, M: Model> Program<'a, M> {
         let mut read_stop_handle = self.inner.lock().unwrap().r#in.clone();
         let txmessage_keypress = txmessage.clone();
         read_start_handle.read_start(
-            |_: &Handle, suggested_size| buf::new_with_capacity(suggested_size).ok(),
-            |_: &StreamHandle, nread, buf: ConstBuf| {
+            |_: &Handle, suggested_size| Buf::new_with_capacity(suggested_size).ok(),
+            |_: &StreamHandle, nread, buf: Buf| {
                 // TODO: handle err
                 let _ = match nread {
-                    Ok(len) => match buf.to_bytes(len as usize) {
-                        Ok(bytes) => txmessage_keypress.send(Message::Keypress(bytes.to_owned())),
-                        Err(err) => panic!("{}", err),
-                    },
+                    Ok(len) => {
+                        txmessage_keypress
+                            .send(Message::Keypress(buf.as_bytes(len as usize).to_vec()));
+                    }
                     Err(err) => panic!("{}", err),
                 };
             },
@@ -235,17 +230,17 @@ impl<'a, M: Model> Program<'a, M> {
                 .write(
                     WriteRequest::new().unwrap(),
                     &[
-                        ConstBuf::from(format!("\x1B[{};{}H", context.home.0, context.home.1)),
-                        ConstBuf::from(context.model.borrow().view()),
+                        Buf::new(format!("\x1B[{};{}H", context.home.0, context.home.1)).unwrap(),
+                        Buf::new(context.model.borrow().view()).unwrap(),
                     ],
                     (),
                 )
                 .unwrap();
         })?;
 
-        self.inner.lock().unwrap().r#in.set_mode(TTYMode::RAW)?;
+        self.inner.lock().unwrap().r#in.set_mode(Mode::RAW)?;
         self.inner.lock().unwrap().r#loop.run(RunMode::DEFAULT)?;
-        Ok(self.inner.lock().unwrap().r#in.set_mode(TTYMode::NORMAL)?)
+        Ok(self.inner.lock().unwrap().r#in.set_mode(Mode::NORMAL)?)
     }
 
     pub fn update<UH>(&self, r#type: MessageType, handler: UH)

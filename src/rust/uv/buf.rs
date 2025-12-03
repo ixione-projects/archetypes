@@ -1,118 +1,123 @@
 use std::{
     alloc::{Layout, alloc},
+    cmp::{self, max, min},
     error::Error,
     ffi::CStr,
     fmt::{Debug, Display},
+    mem::ManuallyDrop,
     ops::{Index, Range, RangeBounds},
     os::raw::c_char,
-    ptr::copy_nonoverlapping,
+    ptr::{copy_nonoverlapping, write, write_bytes},
     slice::from_raw_parts,
 };
 
 use crate::{
-    inners::{FromInner, IntoInner, NullPtrError},
+    inners::{FromInner, IntoInner},
     uv::{Errno, uv_buf_init, uv_buf_t},
 };
 
-pub trait Buf: Copy + FromInner<*const uv_buf_t> + IntoInner<*const uv_buf_t> {
-    fn from_raw(raw: *const uv_buf_t) -> Self;
+// type
 
-    fn len(&self) -> Result<usize, Box<dyn Error>> {
-        let raw = self.into_inner();
-        if raw.is_null() {
-            Err(Box::new(NullPtrError()))
-        } else {
-            unsafe { Ok((*raw).len) }
-        }
-    }
-
-    fn to_bytes(&self, len: usize) -> Result<&[u8], Box<dyn Error>> {
-        let raw = self.into_inner();
-        if raw.is_null() {
-            Err(Box::new(NullPtrError()))
-        } else {
-            unsafe { Ok(from_raw_parts((*raw).base as *const u8, len)) }
-        }
-    }
-}
-
-fn base_alloc(baselen: usize) -> Result<*mut c_char, Box<dyn Error>> {
-    let layout = Layout::array::<c_char>(baselen)?;
-    let base = unsafe { alloc(layout) as *mut c_char };
-    if base.is_null() {
-        return Err(Box::new(Errno::ENOMEM));
-    }
-    Ok(base)
-}
-
-pub fn new_from_bytes<T: Buf>(bytes: &[u8]) -> Result<T, Box<dyn Error>> {
-    let len = bytes.len();
-    let baselen = len + 1; // null terminator
-
-    let base = base_alloc(baselen)?;
-    unsafe {
-        copy_nonoverlapping(bytes.as_ptr() as *mut i8, base, len);
-        *base.add(len) = '\0' as i8;
-    }
-
-    Ok(T::from_raw(Box::into_raw(Box::new(unsafe {
-        uv_buf_init(base, baselen as u32)
-    })))) // uv_buf_t -> *mut uv_buf_t
-}
-
-pub fn new_with_capacity<T: Buf>(baselen: usize) -> Result<T, Box<dyn Error>> {
-    let base = base_alloc(baselen)?;
-
-    Ok(T::from_raw(Box::into_raw(Box::new(unsafe {
-        uv_buf_init(base, baselen as u32)
-    })))) // uv_buf_t -> *mut uv_buf_t
-}
-
-// TODO: Clone should create a new allocation
-#[derive(Debug, Clone, Copy)]
-pub struct ConstBuf {
-    raw: *const uv_buf_t,
-}
-
-// TODO: Clone should create a new allocation
-#[derive(Debug, Clone, Copy)]
-pub struct MutBuf {
+pub struct Buf {
     raw: *mut uv_buf_t,
 }
 
-impl MutBuf {
-    pub fn as_const(self) -> ConstBuf {
-        ConstBuf { raw: self.raw }
+// impl
+
+impl Buf {
+    pub fn new<T>(bytes: T) -> Result<Self, Box<dyn Error>>
+    where
+        T: Into<Vec<u8>>,
+    {
+        let vec = bytes.into();
+        let len = vec.len();
+        let baselen = len + 1; // null terminator
+
+        let layout = Layout::array::<c_char>(baselen)?;
+        let base = unsafe { alloc(layout) as *mut c_char };
+        if base.is_null() {
+            return Err(Box::new(Errno::ENOMEM));
+        }
+
+        unsafe {
+            copy_nonoverlapping(vec.as_ptr() as *mut i8, base, len);
+            write(base.add(len), 0);
+        }
+
+        Ok(Buf {
+            raw: Box::into_raw(Box::new(unsafe { uv_buf_init(base, baselen as u32) })),
+        }) // uv_buf_t -> *mut uv_buf_t
+    }
+
+    pub fn new_with_capacity(baselen: usize) -> Result<Self, Box<dyn Error>> {
+        let layout = Layout::array::<c_char>(baselen)?;
+        let base = unsafe { alloc(layout) as *mut c_char };
+        if base.is_null() {
+            return Err(Box::new(Errno::ENOMEM));
+        }
+
+        unsafe {
+            write_bytes(base, 0, baselen);
+        }
+
+        Ok(Buf {
+            raw: Box::into_raw(Box::new(unsafe { uv_buf_init(base, baselen as u32) })),
+        }) // uv_buf_t -> *mut uv_buf_t
+    }
+
+    pub fn len(&self) -> usize {
+        unsafe { (*self.raw).len }
+    }
+
+    pub fn as_bytes(&self, len: usize) -> &[u8] {
+        &(unsafe { from_raw_parts(self.as_ptr() as *const u8, self.len()) })[..len]
+    }
+
+    pub(crate) fn as_ptr(&self) -> *mut i8 {
+        unsafe { (*self.raw).base }
     }
 }
 
-impl Buf for ConstBuf {
-    fn from_raw(raw: *const uv_buf_t) -> Self {
-        Self { raw }
+// trait
+
+impl Display for Buf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            unsafe { CStr::from_ptr(self.as_ptr()) }.to_string_lossy()
+        )
     }
 }
 
-impl Buf for MutBuf {
-    fn from_raw(raw: *const uv_buf_t) -> Self {
+impl Debug for Buf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Buf").field("raw", &self.raw).finish()
+    }
+}
+
+impl Clone for Buf {
+    fn clone(&self) -> Self {
+        let len = self.len();
+        let layout = Layout::array::<c_char>(len).unwrap();
+        let base = unsafe { alloc(layout) as *mut c_char };
+        if base.is_null() {
+            panic!("{}", Errno::ENOMEM);
+        }
+
+        unsafe {
+            copy_nonoverlapping(self.as_ptr() as *mut i8, base, len);
+        }
+
         Self {
-            raw: raw as *mut uv_buf_t,
+            raw: Box::into_raw(Box::new(unsafe { uv_buf_init(base, len as u32) })),
         }
     }
 }
 
-impl Display for ConstBuf {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", Into::<String>::into(*self))
-    }
-}
+impl Copy for Buf {}
 
-impl Display for MutBuf {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", Into::<String>::into(*self))
-    }
-}
-
-impl Index<usize> for ConstBuf {
+impl Index<usize> for Buf {
     type Output = u8;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -120,15 +125,7 @@ impl Index<usize> for ConstBuf {
     }
 }
 
-impl Index<usize> for MutBuf {
-    type Output = u8;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        unsafe { &*((*self.raw).base.add(index) as *mut u8) }
-    }
-}
-
-impl Index<Range<usize>> for ConstBuf {
+impl Index<Range<usize>> for Buf {
     type Output = [u8];
 
     fn index(&self, index: Range<usize>) -> &Self::Output {
@@ -141,150 +138,46 @@ impl Index<Range<usize>> for ConstBuf {
         let end = match index.end_bound() {
             std::ops::Bound::Included(i) => *i + 1,
             std::ops::Bound::Excluded(i) => *i,
-            std::ops::Bound::Unbounded => self.len().unwrap(),
+            std::ops::Bound::Unbounded => self.len(),
         };
 
         unsafe { from_raw_parts((*self.raw).base.add(start) as *const u8, end - start) }
     }
 }
 
-impl Index<Range<usize>> for MutBuf {
-    type Output = [u8];
+// from_inner/into_inner
 
-    fn index(&self, index: Range<usize>) -> &Self::Output {
-        let start = match index.start_bound() {
-            std::ops::Bound::Included(i) => *i,
-            std::ops::Bound::Excluded(i) => *i + 1,
-            std::ops::Bound::Unbounded => 0,
-        };
-
-        let end = match index.end_bound() {
-            std::ops::Bound::Included(i) => *i + 1,
-            std::ops::Bound::Excluded(i) => *i,
-            std::ops::Bound::Unbounded => self.len().unwrap(),
-        };
-
-        unsafe { from_raw_parts((*self.raw).base.add(start) as *const u8, end - start) }
+impl FromInner<*mut uv_buf_t> for Buf {
+    fn from_inner(raw: *mut uv_buf_t) -> Self {
+        Self { raw }
     }
 }
 
-impl From<String> for ConstBuf {
-    fn from(value: String) -> Self {
-        new_from_bytes(value.as_bytes()).unwrap()
+impl IntoInner<*mut uv_buf_t> for Buf {
+    fn into_inner(self) -> *mut uv_buf_t {
+        self.raw
     }
 }
 
-impl From<String> for MutBuf {
-    fn from(value: String) -> Self {
-        new_from_bytes(value.as_bytes()).unwrap()
-    }
-}
-
-impl From<&str> for ConstBuf {
-    fn from(value: &str) -> Self {
-        new_from_bytes(value.as_bytes()).unwrap()
-    }
-}
-
-impl From<&str> for MutBuf {
-    fn from(value: &str) -> Self {
-        new_from_bytes(value.as_bytes()).unwrap()
-    }
-}
-
-impl From<Box<[u8]>> for ConstBuf {
-    fn from(value: Box<[u8]>) -> Self {
-        new_from_bytes(&value).unwrap()
-    }
-}
-
-impl From<Box<[u8]>> for MutBuf {
-    fn from(value: Box<[u8]>) -> Self {
-        new_from_bytes(&value).unwrap()
-    }
-}
-
-impl From<Vec<u8>> for ConstBuf {
-    fn from(value: Vec<u8>) -> Self {
-        new_from_bytes(&value).unwrap()
-    }
-}
-
-impl From<Vec<u8>> for MutBuf {
-    fn from(value: Vec<u8>) -> Self {
-        new_from_bytes(&value).unwrap()
-    }
-}
-
-impl Into<String> for ConstBuf {
-    fn into(self) -> String {
-        unsafe {
-            String::from_utf8(
-                from_raw_parts((*self.raw).base as *const u8, (*self.raw).len).to_vec(),
-            )
-            .unwrap()
+impl FromInner<(*mut uv_buf_t, usize)> for &[Buf] {
+    fn from_inner((base, len): (*mut uv_buf_t, usize)) -> Self {
+        let mut buf = Vec::with_capacity(len);
+        for mut v in unsafe { Vec::from_raw_parts(base, len, len) } {
+            buf.push(Buf::from_inner(&mut v));
         }
+        Vec::leak(buf)
     }
 }
 
-impl Into<String> for MutBuf {
-    fn into(self) -> String {
-        unsafe {
-            String::from_utf8(from_raw_parts((*self.raw).base as *mut u8, (*self.raw).len).to_vec())
-                .unwrap()
-        }
-    }
-}
-
-impl<T> IntoInner<Box<[uv_buf_t]>> for &[T]
-where
-    T: Buf,
-{
-    fn into_inner(self) -> Box<[uv_buf_t]> {
-        let mut buf = Vec::new();
+impl IntoInner<(*mut uv_buf_t, usize)> for &[Buf] {
+    fn into_inner(self) -> (*mut uv_buf_t, usize) {
+        let mut buf = Vec::with_capacity(self.len());
         unsafe {
             for b in self {
-                buf.push(*(T::into_inner(*b)));
+                buf.push(*b.into_inner());
             }
         };
-        buf.into_boxed_slice()
-    }
-}
-
-impl FromInner<*const uv_buf_t> for ConstBuf {
-    fn from_inner(raw: *const uv_buf_t) -> Self {
-        Self { raw }
-    }
-}
-
-impl FromInner<*mut uv_buf_t> for ConstBuf {
-    fn from_inner(raw: *mut uv_buf_t) -> Self {
-        Self { raw }
-    }
-}
-
-impl IntoInner<*const uv_buf_t> for ConstBuf {
-    fn into_inner(self) -> *const uv_buf_t {
-        self.raw
-    }
-}
-
-impl FromInner<*const uv_buf_t> for MutBuf {
-    fn from_inner(raw: *const uv_buf_t) -> Self {
-        Self {
-            raw: raw as *mut uv_buf_t,
-        }
-    }
-}
-
-impl FromInner<*mut uv_buf_t> for MutBuf {
-    fn from_inner(raw: *mut uv_buf_t) -> Self {
-        Self { raw }
-    }
-}
-
-impl IntoInner<*const uv_buf_t> for MutBuf {
-    fn into_inner(self) -> *const uv_buf_t {
-        self.raw
+        let mut buf = ManuallyDrop::new(buf);
+        (buf.as_mut_ptr(), buf.len())
     }
 }

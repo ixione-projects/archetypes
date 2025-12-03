@@ -5,8 +5,10 @@ use crate::{
     uv::{self, uv_err_name, uv_errno_t, uv_strerror},
 };
 
+// type
+
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Errno {
     E2BIG,
     EACCES,
@@ -94,6 +96,34 @@ pub enum Errno {
     EUNATCH,
     ERRNO_MAX,
 }
+
+// impl
+
+impl Errno {
+    fn name(&self) -> String {
+        unsafe { CStr::from_ptr(uv_err_name(self.into_inner())) }
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    pub fn message(&self) -> String {
+        unsafe { CStr::from_ptr(uv_strerror(self.into_inner())) }
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+// trait
+
+impl Display for Errno {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.name(), self.message())
+    }
+}
+
+impl Error for Errno {}
+
+// from_inner/into_inner
 
 impl FromInner<uv_errno_t> for Errno {
     fn from_inner(value: uv_errno_t) -> Self {
@@ -188,7 +218,7 @@ impl FromInner<uv_errno_t> for Errno {
     }
 }
 
-impl IntoInner<uv_errno_t> for &Errno {
+impl IntoInner<uv_errno_t> for Errno {
     fn into_inner(self) -> uv_errno_t {
         match self {
             Errno::E2BIG => uv::uv_errno_t_UV_E2BIG,
@@ -279,31 +309,3 @@ impl IntoInner<uv_errno_t> for &Errno {
         }
     }
 }
-
-impl Errno {
-    pub fn name(&self) -> String {
-        unsafe {
-            CStr::from_ptr(uv_err_name(self.into_inner()))
-                .to_str()
-                .unwrap()
-                .to_owned()
-        }
-    }
-
-    pub fn message(&self) -> String {
-        unsafe {
-            CStr::from_ptr(uv_strerror(self.into_inner()))
-                .to_str()
-                .unwrap()
-                .to_owned()
-        }
-    }
-}
-
-impl Display for Errno {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.name(), self.message())
-    }
-}
-
-impl Error for Errno {}
