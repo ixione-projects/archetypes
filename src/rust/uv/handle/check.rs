@@ -68,7 +68,7 @@ impl CheckHandle {
         let layout = Layout::new::<uv_check_t>();
         let raw = unsafe { alloc(layout) as *mut uv_check_t };
         if raw.is_null() {
-            return Err(Errno::ENOMEM);
+            panic!("{}", Errno::ENOMEM);
         }
 
         super::init_handle(raw as *mut uv_handle_t);
@@ -175,7 +175,7 @@ impl<'a> From<()> for CheckCallback<'a> {
     }
 }
 
-// from_inner/into_inner
+// inner
 
 impl FromInner<*mut uv_check_t> for CheckHandle {
     fn from_inner(raw: *mut uv_check_t) -> Self {

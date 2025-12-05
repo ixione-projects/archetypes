@@ -123,7 +123,7 @@ impl Display for Errno {
 
 impl Error for Errno {}
 
-// from_inner/into_inner
+// inner
 
 impl FromInner<uv_errno_t> for Errno {
     fn from_inner(value: uv_errno_t) -> Self {

@@ -9,6 +9,7 @@ pub(crate) use stream::*;
 use std::{
     any::{Any, TypeId},
     ffi::CStr,
+    fmt::Display,
     os::raw::c_void,
     ptr::{copy_nonoverlapping, null_mut},
 };
@@ -261,6 +262,12 @@ impl IHandle for Handle {
 
 // trait
 
+impl Display for HandleType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
 impl<'a, Fn> From<Fn> for AllocCallback<'a>
 where
     Fn: FnMut(&Handle, usize) -> Option<Buf> + 'a,
@@ -291,7 +298,7 @@ impl<'a> From<()> for CloseCallback<'a> {
     }
 }
 
-// from_inner/into_inner
+// inner
 
 impl FromInner<uv_handle_type> for HandleType {
     fn from_inner(value: uv_handle_type) -> Self {

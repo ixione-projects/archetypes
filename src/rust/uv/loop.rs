@@ -59,7 +59,7 @@ impl Loop {
         let layout = Layout::new::<uv_loop_t>();
         let raw = unsafe { alloc(layout) as *mut uv_loop_t };
         if raw.is_null() {
-            return Err(Errno::ENOMEM);
+            panic!("{}", Errno::ENOMEM);
         }
 
         init_loop(raw);
@@ -176,7 +176,7 @@ impl Default for Loop {
     }
 }
 
-// from_inner/into_inner
+// inner
 
 impl FromInner<uv_loop_option> for ConfigurationOption {
     fn from_inner(value: uv_loop_option) -> Self {

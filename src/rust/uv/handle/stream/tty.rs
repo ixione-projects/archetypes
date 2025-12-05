@@ -66,7 +66,7 @@ impl TTYStream {
         let layout = Layout::new::<uv_tty_t>();
         let raw = unsafe { alloc(layout) as *mut uv_tty_t };
         if raw.is_null() {
-            return Err(Errno::ENOMEM);
+            panic!("{}", Errno::ENOMEM);
         }
 
         super::init_stream(raw as *mut uv_stream_t);
@@ -154,7 +154,7 @@ impl Loop {
     }
 }
 
-// from_inner/into_inner
+// inner
 
 impl FromInner<uv_tty_mode_t> for Mode {
     fn from_inner(value: uv_tty_mode_t) -> Self {

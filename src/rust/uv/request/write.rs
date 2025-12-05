@@ -65,16 +65,16 @@ pub(crate) unsafe extern "C" fn uv_write_cb(req: *mut uv_write_t, status: c_int)
 // impl
 
 impl WriteRequest {
-    pub fn new() -> Result<Self, Errno> {
+    pub fn new() -> Self {
         let layout = Layout::new::<uv_write_t>();
         let raw = unsafe { alloc(layout) as *mut uv_write_t };
         if raw.is_null() {
-            return Err(Errno::ENOMEM);
+            panic!("{}", Errno::ENOMEM);
         }
 
         super::init_request(raw as *mut uv_req_t);
 
-        Ok(Self { raw })
+        Self { raw }
     }
     pub fn get_data<D: 'static>(&self) -> Option<&mut D> {
         let request = self.into_request();
@@ -131,7 +131,7 @@ impl<'a> From<()> for WriteCallback<'a> {
     }
 }
 
-// from_inner/into_inner
+// inner
 
 impl FromInner<*mut uv_write_t> for WriteRequest {
     fn from_inner(raw: *mut uv_write_t) -> Self {

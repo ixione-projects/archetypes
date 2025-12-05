@@ -151,7 +151,7 @@ pub(crate) unsafe extern "C" fn uv_read_cb(
         if let Some(ref mut read_cb) = context.read_cb {
             read_cb.0(&stream, status, Buf::from_inner(buf as *mut uv_buf_t));
         }
-        drop(Box::from_raw(buf as *mut uv_buf_t))
+        // drop(Box::from_raw(buf as *mut uv_buf_t)) // FIXME: why is dropping here causing a double free?
     }
 }
 
@@ -367,7 +367,7 @@ impl<'a> From<()> for ReadCallback<'a> {
     }
 }
 
-// from_inner/into_inner
+// inner
 
 impl FromInner<*mut uv_stream_t> for StreamHandle {
     fn from_inner(raw: *mut uv_stream_t) -> Self {

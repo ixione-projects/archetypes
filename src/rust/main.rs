@@ -1,14 +1,10 @@
+#![feature(try_blocks)]
+
 pub mod inners;
 pub mod tea;
 pub mod uv;
 
-use std::error::Error;
-
-use crate::tea::{
-    Program, ProgramContext, command,
-    message::{Message, MessageType},
-    model::Model,
-};
+use crate::tea::{Message, MessageType, Model, Program, ProgramContext, ProgramError, command};
 
 #[derive(Clone)]
 pub struct Frame(Vec<u8>);
@@ -19,18 +15,18 @@ impl Model for Frame {
     }
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let program = Program::init(Frame(Vec::new())).unwrap();
+fn main() -> Result<(), ProgramError> {
+    let mut program = Program::init(Frame(Vec::new())).unwrap();
 
     program.update(
         MessageType::Keypress,
-        |program: &ProgramContext<Frame>, msg: &Message| {
-            if let Message::Keypress(keys) = msg {
-                if keys[0] == 03 {
+        |model: &mut Frame, _: &ProgramContext, msg: &Message| {
+            if let Message::Keypress(keycode) = msg {
+                if keycode.code[0] == 03 {
                     Some(command::Terminate.into())
                 } else {
-                    for key in keys {
-                        program.model.borrow_mut().0.push(*key);
+                    for ch in keycode.code.iter() {
+                        model.0.push(*ch);
                     }
                     None
                 }

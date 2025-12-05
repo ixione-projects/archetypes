@@ -78,16 +78,16 @@ pub(crate) unsafe extern "C" fn uv_after_work_cb(req: *mut uv_work_t, status: c_
 // impl
 
 impl WorkRequest {
-    pub fn new() -> Result<Self, Errno> {
+    pub fn new() -> Self {
         let layout = Layout::new::<uv_work_t>();
         let raw = unsafe { alloc(layout) as *mut uv_work_t };
         if raw.is_null() {
-            return Err(Errno::ENOMEM);
+            panic!("{}", Errno::ENOMEM);
         }
 
         super::init_request(raw as *mut uv_req_t);
 
-        Ok(Self { raw })
+        Self { raw }
     }
 
     pub fn get_data<D: 'static>(&self) -> Option<&mut D> {
@@ -199,7 +199,7 @@ impl<'a> From<()> for AfterWorkCallback<'a> {
     }
 }
 
-// from_inner/into_inner
+// inner
 
 impl FromInner<*mut uv_work_t> for WorkRequest {
     fn from_inner(raw: *mut uv_work_t) -> Self {

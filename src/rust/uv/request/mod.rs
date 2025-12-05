@@ -23,7 +23,7 @@ use crate::{
     inners::{FromInner, IntoInner},
     uv::{
         self, Errno, uv_cancel, uv_fs_t, uv_req_get_data, uv_req_get_type, uv_req_set_data,
-        uv_req_t, uv_req_type, uv_req_type_name, uv_work_t, uv_write_t,
+        uv_req_t, uv_req_type, uv_req_type_name, uv_shutdown_t, uv_work_t, uv_write_t,
     },
 };
 
@@ -170,6 +170,9 @@ impl IRequest for Request {
             RequestType::WRITE => {
                 WriteRequest::from_inner(self.raw as *mut uv_write_t).drop_request()
             }
+            RequestType::SHUTDOWN => {
+                ShutdownRequest::from_inner(self.raw as *mut uv_shutdown_t).drop_request()
+            }
             RequestType::FS => {
                 FileSystemRequest::from_inner(self.raw as *mut uv_fs_t).drop_request()
             }
@@ -182,7 +185,7 @@ impl IRequest for Request {
     }
 }
 
-// from_inner/into_inner
+// inner
 
 impl FromInner<uv_req_type> for RequestType {
     fn from_inner(value: uv_req_type) -> Self {

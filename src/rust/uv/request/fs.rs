@@ -10,8 +10,8 @@ use crate::{
     inners::{FromInner, IntoInner},
     result,
     uv::{
-        self, Buf, Errno, IRequest, Loop, uv_buf_t, uv_fs_close, uv_fs_open, uv_fs_read,
-        uv_fs_req_cleanup, uv_fs_t, uv_fs_type, uv_fs_write, uv_req_t,
+        self, Buf, Errno, IRequest, Loop, uv_buf_t, uv_fs_close, uv_fs_get_result, uv_fs_open,
+        uv_fs_read, uv_fs_req_cleanup, uv_fs_t, uv_fs_type, uv_fs_write, uv_req_t,
     },
 };
 
@@ -109,7 +109,6 @@ pub const SHORT_LIVED: OpenOption = 0;
 pub const SEQUENTIAL: OpenOption = 0;
 pub const TEMPORARY: OpenOption = 0;
 
-#[derive(Debug, Clone, Copy)]
 pub struct OpenOptionSet(u32);
 
 pub struct FileSystemCallback<'a>(pub Box<dyn FnMut(FileSystemRequest) + 'a>);
@@ -134,6 +133,7 @@ pub(crate) unsafe extern "C" fn uv_fs_cb(req: *mut uv_fs_t) {
             fs_cb.0(fs);
         }
     }
+    // TODO: add cleanup to all request types
     fs.cleanup();
     fs.into_request().drop_context();
     fs.drop_request();
@@ -156,29 +156,30 @@ impl OpenOptionSet {
         self
     }
 
-    pub fn check(&self, option: OpenOption) -> bool {
-        (self.0 & option) == 0
+    pub fn has(&self, option: OpenOption) -> bool {
+        (self.0 & option) != 0
     }
 }
 
 impl FileSystemRequest {
-    pub fn new() -> Result<Self, Errno> {
+    pub fn new() -> Self {
         let layout = Layout::new::<uv_fs_t>();
         let raw = unsafe { alloc(layout) as *mut uv_fs_t };
-        super::init_request(raw as *mut uv_req_t);
         if raw.is_null() {
-            Err(Errno::ENOMEM)
-        } else {
-            Ok(Self { raw })
+            panic!("{}", Errno::ENOMEM);
         }
+
+        super::init_request(raw as *mut uv_req_t);
+
+        Self { raw }
     }
 
-    pub fn cleanup(self) {
+    pub fn cleanup(&self) {
         unsafe { uv_fs_req_cleanup(self.raw) };
     }
 
     pub fn result(&self) -> isize {
-        unsafe { (*self.raw).result }
+        unsafe { uv_fs_get_result(self.raw) }
     }
 }
 
@@ -328,7 +329,7 @@ impl Loop {
         file: i32,
         bufs: &[Buf],
         offset: i64,
-    ) -> Result<&[Buf], Errno> {
+    ) -> Result<(&[Buf], isize), Errno> {
         let (bufs, nbufs) = bufs.into_inner();
         let result = unsafe {
             uv_fs_read(
@@ -345,9 +346,14 @@ impl Loop {
         if result < 0 {
             Err(Errno::from_inner(result))
         } else {
-            Ok(FromInner::<(*mut uv_buf_t, usize)>::from_inner((
-                bufs, nbufs,
-            )))
+            let ret = req.result();
+            req.cleanup();
+            req.into_request().drop_context();
+            req.drop_request();
+            Ok((
+                FromInner::<(*mut uv_buf_t, usize)>::from_inner((bufs, nbufs)),
+                ret,
+            ))
         }
     }
 
@@ -395,9 +401,9 @@ impl Loop {
         file: i32,
         bufs: &[Buf],
         offset: i64,
-    ) -> Result<(), Errno> {
+    ) -> Result<isize, Errno> {
         let (bufs, nbufs) = bufs.into_inner();
-        result!(unsafe {
+        let result = unsafe {
             uv_fs_write(
                 self.into_inner(),
                 req.into_inner(),
@@ -407,7 +413,17 @@ impl Loop {
                 offset,
                 Some(uv_fs_cb),
             )
-        })
+        };
+
+        if result < 0 {
+            Err(Errno::from_inner(result))
+        } else {
+            let ret = req.result();
+            req.cleanup();
+            req.into_request().drop_context();
+            req.drop_request();
+            Ok(ret)
+        }
     }
 }
 
@@ -434,7 +450,7 @@ impl<'a> From<()> for FileSystemCallback<'a> {
     }
 }
 
-// from_inner/into_inner
+// inner
 
 impl FromInner<uv_fs_type> for FileSystemRequestType {
     fn from_inner(value: uv_fs_type) -> Self {

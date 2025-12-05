@@ -65,16 +65,16 @@ pub(crate) unsafe extern "C" fn uv_shutdown_cb(req: *mut uv_shutdown_t, status: 
 // impl
 
 impl ShutdownRequest {
-    pub fn new() -> Result<Self, Errno> {
+    pub fn new() -> Self {
         let layout = Layout::new::<uv_shutdown_t>();
         let raw = unsafe { alloc(layout) as *mut uv_shutdown_t };
         if raw.is_null() {
-            return Err(Errno::ENOMEM);
+            panic!("{}", Errno::ENOMEM);
         }
 
         super::init_request(raw as *mut uv_req_t);
 
-        Ok(Self { raw })
+        Self { raw }
     }
     pub fn get_data<D: 'static>(&self) -> Option<&mut D> {
         let request = self.into_request();
@@ -131,7 +131,7 @@ impl<'a> From<()> for ShutdownCallback<'a> {
     }
 }
 
-// from_inner/into_inner
+// inner
 
 impl FromInner<*mut uv_shutdown_t> for ShutdownRequest {
     fn from_inner(raw: *mut uv_shutdown_t) -> Self {
