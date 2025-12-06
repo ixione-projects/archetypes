@@ -1,13 +1,12 @@
 use std::{
-    alloc::{Layout, alloc, realloc},
+    alloc::{Layout, alloc, dealloc, realloc},
     ffi::CStr,
     fmt::{Debug, Display},
-    marker::PhantomData,
     mem::ManuallyDrop,
-    ops::{Index, Range, RangeBounds},
+    ops::{Deref, DerefMut, Index, Range, RangeBounds},
     os::raw::c_char,
-    ptr::{copy, copy_nonoverlapping, write, write_bytes},
-    slice::from_raw_parts,
+    ptr::{copy, copy_nonoverlapping, null_mut, write, write_bytes},
+    slice::{from_raw_parts, from_raw_parts_mut},
 };
 
 use crate::{
@@ -21,78 +20,129 @@ pub struct Buf {
     raw: *mut uv_buf_t,
 }
 
-pub struct BufIter<'a> {
-    bytes: &'a [u8],
-    off: usize,
+pub trait ConvertBuf {
+    fn to_buf(&self) -> Buf;
+}
 
-    marker: PhantomData<&'a [u8]>,
+// fn
+
+pub(crate) unsafe fn alloc_base(baselen: usize) -> *mut c_char {
+    match Layout::array::<c_char>(baselen) {
+        Ok(layout) => {
+            let base = unsafe { alloc(layout) as *mut c_char };
+            if base.is_null() {
+                panic!("{}", Errno::ENOMEM);
+            }
+
+            unsafe {
+                write_bytes(base, 0, baselen);
+            }
+
+            base
+        }
+        Err(_) => {
+            panic!("{}", Errno::ENOMEM);
+        }
+    }
+}
+
+pub(crate) unsafe fn realloc_base(base: *mut c_char, oldlen: usize, newlen: usize) -> *mut c_char {
+    match Layout::array::<c_char>(newlen) {
+        Ok(layout) => {
+            let newbase = unsafe { realloc(base as *mut u8, layout, newlen) };
+            if newbase.is_null() {
+                panic!("{}", Errno::ENOMEM);
+            }
+
+            if newlen > oldlen {
+                unsafe {
+                    write_bytes(newbase.add(oldlen), 0, newlen - oldlen);
+                }
+            }
+
+            newbase as *mut c_char
+        }
+        Err(_) => {
+            panic!("{}", Errno::ENOMEM);
+        }
+    }
+}
+
+pub(crate) unsafe fn dealloc_base(base: *mut c_char, baselen: usize) {
+    match Layout::array::<c_char>(baselen) {
+        Ok(layout) => {
+            unsafe { dealloc(base as *mut u8, layout) };
+        }
+        Err(_) => {
+            panic!("{}", Errno::ENOMEM);
+        }
+    }
 }
 
 // impl
 
 impl Buf {
-    pub fn new<T>(bytes: T) -> Self
-    where
-        T: Into<Vec<u8>>,
-    {
-        let vec = bytes.into();
-        let len = vec.len();
-        let baselen = len + 1; // null terminator
-
-        match Layout::array::<c_char>(baselen) {
-            Ok(layout) => {
-                let base = unsafe { alloc(layout) as *mut c_char };
-                if base.is_null() {
-                    panic!("{}", Errno::ENOMEM);
-                }
-
-                unsafe {
-                    copy_nonoverlapping(vec.as_ptr() as *mut i8, base, len);
-                    write(base.add(len), 0);
-                }
-
-                Buf {
-                    raw: Box::into_raw(Box::new(unsafe { uv_buf_init(base, baselen as u32) })),
-                } // uv_buf_t -> *mut uv_buf_t
-            }
-            Err(_) => {
-                panic!("{}", Errno::ENOMEM);
-            }
+    pub fn new() -> Self {
+        let layout = Layout::new::<uv_buf_t>();
+        let raw = unsafe { alloc(layout) as *mut uv_buf_t };
+        if raw.is_null() {
+            panic!("{}", Errno::ENOMEM);
         }
+
+        unsafe {
+            (*raw).base = null_mut();
+            (*raw).len = 0; // uninitialized
+        }
+
+        Self { raw }
     }
 
-    pub fn new_with_capacity(baselen: usize) -> Self {
-        match Layout::array::<c_char>(baselen) {
-            Ok(layout) => {
-                let base = unsafe { alloc(layout) as *mut c_char };
-                if base.is_null() {
-                    panic!("{}", Errno::ENOMEM);
-                }
-
-                unsafe {
-                    write_bytes(base, 0, baselen);
-                }
-
-                Buf {
-                    raw: Box::into_raw(Box::new(unsafe { uv_buf_init(base, baselen as u32) })),
-                } // uv_buf_t -> *mut uv_buf_t
-            }
-            Err(_) => {
-                panic!("{}", Errno::ENOMEM);
-            }
-        }
+    pub fn new_with_len(baselen: usize) -> Self {
+        let base = unsafe { alloc_base(baselen) };
+        Buf {
+            raw: Box::into_raw(Box::new(unsafe { uv_buf_init(base, baselen as u32) })),
+        } // uv_buf_t -> *mut uv_buf_t
     }
 
     pub fn join(bufs: &[Buf]) -> Self {
         let baselen = bufs.iter().map(|b| b.len()).sum();
-        let result = Buf::new_with_capacity(baselen);
+        let mut result = Buf::new_with_len(baselen);
         let mut off = 0;
-        for buf in bufs {
-            let len = buf.len();
-            unsafe { copy(buf.base(), result.base().add(off), len) }
-            off += len;
+        bufs.iter()
+            .filter(|buf| buf.is_initialized())
+            .for_each(|buf| {
+                let len = buf.non_null_len();
+                unsafe {
+                    copy(buf.base(), result.base().add(off), len);
+
+                    dealloc_base(buf.base(), buf.len());
+                    (*buf.raw).base = null_mut();
+                    (*buf.raw).len = 0;
+                }
+                off += len;
+            });
+        result.resize(off + 1); // null terminator
+        unsafe {
+            write(result.base().add(off), 0);
         }
         result
+    }
+
+    pub fn append(&mut self, other: &Self) -> &mut Self {
+        let selflen = self.non_null_len();
+        let otherlen = other.non_null_len();
+        self.resize(selflen + otherlen + 1);
+
+        unsafe {
+            copy(other.base(), self.base().add(selflen), otherlen);
+            write(self.base().add(selflen + otherlen), 0);
+
+            dealloc_base(other.base(), other.len());
+            (*other.raw).base = null_mut();
+            (*other.raw).len = 0;
+        }
+
+        self
     }
 
     pub fn resize(&mut self, newlen: usize) -> &mut Self {
@@ -100,17 +150,16 @@ impl Buf {
             return self;
         }
 
-        let layout = Layout::array::<c_char>(newlen).unwrap();
-        let newbase = unsafe { realloc(self.base() as *mut u8, layout, newlen) };
-        if newbase.is_null() {
-            panic!("{}", Errno::ENOMEM);
-        }
-
         unsafe {
-            copy(self.base() as *mut u8, newbase, self.len());
+            if !self.is_initialized() {
+                (*self.raw).base = alloc_base(newlen);
+                (*self.raw).len = newlen;
+            } else {
+                let newbase = realloc_base(self.base(), self.len(), newlen);
 
-            (*self.raw).base = newbase as *mut i8;
-            (*self.raw).len = newlen;
+                (*self.raw).base = newbase as *mut i8;
+                (*self.raw).len = newlen;
+            }
         }
 
         self
@@ -124,28 +173,53 @@ impl Buf {
         unsafe { (*self.raw).base }
     }
 
-    pub fn iter(&self) -> BufIter<'_> {
-        BufIter {
-            bytes: self.as_bytes(),
-            off: 0,
-            marker: PhantomData,
+    pub fn as_bytes(&self) -> &[u8] {
+        if !self.is_initialized() {
+            &[]
+        } else {
+            unsafe { from_raw_parts(self.base() as *const u8, self.len()) }
         }
     }
 
-    pub fn as_bytes(&self) -> &[u8] {
-        unsafe { from_raw_parts(self.base() as *const u8, self.len()) }
+    pub fn as_bytes_mut(&self) -> &mut [u8] {
+        if !self.is_initialized() {
+            &mut []
+        } else {
+            unsafe { from_raw_parts_mut(self.base() as *mut u8, self.len()) }
+        }
+    }
+
+    #[inline]
+    pub(crate) fn non_null_len(&self) -> usize {
+        if !self.is_initialized() {
+            0
+        } else {
+            // NOTE: if None then Buf was not properly initialized
+            self.iter().position(|ch| ch == &b'\0').unwrap()
+        }
+    }
+
+    #[inline]
+    pub fn is_initialized(&self) -> bool {
+        self.len() != 0
     }
 }
 
 // trait
 
+impl ConvertBuf for [u8] {
+    fn to_buf(&self) -> Buf {
+        Buf::from(self)
+    }
+}
+
 impl Display for Buf {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            unsafe { CStr::from_ptr(self.base()) }.to_string_lossy()
-        )
+        if !self.is_initialized() {
+            write!(f, "")
+        } else {
+            write!(f, "{:?}", unsafe { CStr::from_ptr(self.base()) })
+        }
     }
 }
 
@@ -174,7 +248,7 @@ impl Clone for Buf {
     }
 }
 
-impl Copy for Buf {}
+impl Copy for Buf {} // copy-safe because Buf is ownerless
 
 impl Index<usize> for Buf {
     type Output = u8;
@@ -204,16 +278,38 @@ impl Index<Range<usize>> for Buf {
     }
 }
 
-impl<'a> Iterator for BufIter<'a> {
-    type Item = &'a u8;
+impl Deref for Buf {
+    type Target = [u8];
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.off < self.bytes.len() && self.bytes[self.off] != 0 {
-            self.off += 1;
-            Some(&self.bytes[self.off - 1])
-        } else {
-            None
+    fn deref(&self) -> &Self::Target {
+        self.as_bytes()
+    }
+}
+
+impl DerefMut for Buf {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_bytes_mut()
+    }
+}
+
+impl<T> From<T> for Buf
+where
+    T: Into<Vec<u8>>,
+{
+    fn from(bytes: T) -> Self {
+        let vec = bytes.into();
+        let len = vec.len();
+        let baselen = len + 1; // null terminator
+
+        let base = unsafe { alloc_base(baselen) };
+        unsafe {
+            copy_nonoverlapping(vec.as_ptr() as *mut i8, base, len);
+            write(base.add(len), 0);
         }
+
+        Buf {
+            raw: Box::into_raw(Box::new(unsafe { uv_buf_init(base, baselen as u32) })),
+        } // uv_buf_t -> *mut uv_buf_t
     }
 }
 

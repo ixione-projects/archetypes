@@ -17,6 +17,7 @@ pub enum KeyName {
     NONE,
 }
 
+#[derive(Debug, Clone)]
 pub struct KeyCode {
     pub key: KeyName,
     pub code: Vec<u8>,
@@ -25,6 +26,7 @@ pub struct KeyCode {
     pub alt: bool,
 }
 
+#[derive(Debug)]
 pub struct KeyCodeParser {
     buf: VecDeque<u8>,
     incomplete: Vec<u8>,
@@ -41,7 +43,6 @@ pub fn is_shift(ch: u8) -> bool {
         || (ch >= b'\x7b' && ch <= b'\x7e');
 }
 
-// TODO: impl Iterator
 impl KeyCodeParser {
     pub fn parse_keycode(&mut self) -> Option<KeyCode> {
         self.incomplete.clear();
@@ -182,14 +183,12 @@ impl KeyCodeParser {
             if ch <= &b'0' || ch >= &b'9' {
                 break;
             }
-            self.buf.pop_front();
+            self.advance();
         }
     }
 
     pub fn buffer(&mut self, buf: &Buf) {
-        for ch in buf.iter() {
-            self.buf.push_back(*ch);
-        }
+        self.buf.extend(buf.as_ref()[..buf.len() - 1].iter()); // remove null terminator
     }
 
     fn r#match(&mut self, expect: u8) -> bool {
@@ -216,30 +215,6 @@ impl Default for KeyCodeParser {
         Self {
             buf: Default::default(),
             incomplete: Default::default(),
-        }
-    }
-}
-
-impl Debug for KeyCode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KeyCode")
-            .field("key", &self.key)
-            .field("code", &self.code)
-            .field("shift", &self.shift)
-            .field("ctrl", &self.ctrl)
-            .field("alt", &self.alt)
-            .finish()
-    }
-}
-
-impl Clone for KeyCode {
-    fn clone(&self) -> Self {
-        Self {
-            key: self.key.clone(),
-            code: self.code.clone(),
-            shift: self.shift.clone(),
-            ctrl: self.ctrl.clone(),
-            alt: self.alt.clone(),
         }
     }
 }

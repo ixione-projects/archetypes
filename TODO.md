@@ -7,4 +7,5 @@
 15. Add Tests
 16. Error handling inside callbacks
 17. Add README
-18. Update Cargo.toml correct executable name
+19. Is it possible to have libuv handles close on drop?
+20. Impl Default for all ffi handles

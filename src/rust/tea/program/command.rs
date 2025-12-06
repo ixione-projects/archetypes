@@ -8,7 +8,9 @@ pub trait Command<M: Model> {
 
 pub struct Terminate;
 impl<M: Model> Command<M> for Terminate {
-    fn call(&mut self, _: &Mutex<ProgramContext>, _: &Mutex<ProgramInner>) -> Message {
+    fn call(&mut self, _: &Mutex<ProgramContext>, inner: &Mutex<ProgramInner>) -> Message {
+        inner.lock().unwrap().terminate();
+
         Message::Terminate
     }
 }

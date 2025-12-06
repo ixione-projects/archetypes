@@ -33,11 +33,16 @@ impl<'a, M: Model> UpdateBroker<'a, M> {
                         if let Err(err) = r#loop.queue_work(
                             WorkRequest::new(),
                             |_| {
-                                txmessage.send(cmd.call(context, inner)).unwrap();
+                                let message = cmd.call(context, inner);
+                                if let Message::Terminate = message {
+                                    self.publish(model, context, inner, r#loop, txmessage, message);
+                                } else {
+                                    txmessage.send(message).unwrap();
+                                }
                             },
                             (),
                         ) {
-                            panic!("{}", err)
+                            txmessage.send(Message::from(err)).unwrap();
                         }
                     }
                 }

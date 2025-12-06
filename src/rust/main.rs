@@ -1,5 +1,3 @@
-#![feature(try_blocks)]
-
 pub mod inners;
 pub mod tea;
 pub mod uv;
@@ -25,9 +23,7 @@ fn main() -> Result<(), ProgramError> {
                 if keycode.code[0] == 03 {
                     Some(command::Terminate.into())
                 } else {
-                    for ch in keycode.code.iter() {
-                        model.0.push(*ch);
-                    }
+                    model.0.extend(&keycode.code);
                     None
                 }
             } else {

@@ -8,23 +8,23 @@ pub mod error;
 pub use error::*;
 
 use std::{
+    cell::RefCell,
     io::{stdin, stdout},
     os::fd::AsRawFd,
+    rc::Rc,
     str::from_utf8,
     sync::{Mutex, mpsc::channel},
-    thread,
-    time::Duration,
 };
 
 use crate::{
     tea::{KeyCodeParser, Message, MessageType, Model},
     uv::{
-        Buf, CheckHandle, Errno, FileSystemRequest, Handle, HandleType, IHandle, IStreamHandle,
-        Loop, Mode, RunMode, StreamHandle, TTYStream, WriteRequest, guess_handle,
+        Buf, CheckHandle, ConvertBuf, Handle, HandleType, IHandle, IStreamHandle, Loop, Mode,
+        RunMode, StreamHandle, TTYStream, WriteRequest, guess_handle,
     },
 };
 
-pub const CPR_REQUEST: &'static str = "\x1B[6n"; // TODO: change to \u
+pub const CPR_REQUEST: &'static str = "\u{1b}[6n";
 
 pub struct Program<'a, M: Model> {
     model: M,
@@ -56,16 +56,28 @@ impl ProgramInner {
 }
 
 impl<'a, M: Model> Program<'a, M> {
-    // TODO: init through an inner struct and impl drop to reset tty on init error
     pub fn init(model: M) -> Result<Self, ProgramError> {
-        let r#loop = Loop::default();
+        struct InitDropGaurd {
+            r#in: RefCell<TTYStream>,
+        }
+        impl Drop for InitDropGaurd {
+            fn drop(&mut self) {
+                self.r#in.borrow_mut().set_mode(Mode::NORMAL).unwrap();
+            }
+        }
+
+        let mut r#loop = Loop::default();
+
         let stdin = stdin().as_raw_fd();
         let stdin_guess = guess_handle(stdin);
         if stdin_guess != HandleType::TTY {
             panic!("expected stdin to be TTY but found [{}]", stdin_guess);
         }
 
-        let mut r#in = r#loop.new_tty(stdin)?;
+        let r#in: Rc<TTYStream> = Rc::new(r#loop.new_tty(stdin)?);
+        let guard = InitDropGaurd {
+            r#in: RefCell::new(*r#in.clone()),
+        };
 
         let stdout = stdout().as_raw_fd();
         let stdout_guess = guess_handle(stdin);
@@ -73,96 +85,90 @@ impl<'a, M: Model> Program<'a, M> {
             panic!("expected stdout to be TTY but found [{}]", stdout_guess);
         }
 
-        let out = r#loop.new_tty(stdout)?;
+        let mut out = r#loop.new_tty(stdout)?;
+        let (width, height) = out.get_winsize()?;
 
-        let result = try {
-            let (width, height) = out.get_winsize()?;
+        guard.r#in.borrow_mut().set_mode(Mode::RAW)?;
 
-            r#in.set_mode(Mode::RAW)?;
-            r#loop.fs_write_sync(
-                FileSystemRequest::new(),
-                stdout,
-                &[Buf::new(CPR_REQUEST)],
-                -1,
-            )?;
+        let mut report = Buf::new();
+        guard.r#in.borrow_mut().read_start(
+            |_: &Handle, suggested_size| Some(Buf::new_with_len(suggested_size)),
+            |_: &StreamHandle, nread, buf: Buf| {
+                match nread {
+                    Ok(len) => {
+                        report.append(&buf.as_ref()[..len as usize].to_buf());
+                        if report[report.len() - 2] == b'R' {
+                            guard.r#in.borrow_mut().read_stop();
+                        }
+                    }
+                    Err(err) => panic!("{}", err),
+                };
+            },
+        )?;
 
-            // FIXME: unfortunately it looks like fs_write/fs_read will not work for tty
-            let report = r#loop.fs_read_sync(
-                FileSystemRequest::new(),
-                stdin,
-                &[Buf::new_with_capacity(32)],
-                -1,
-            )?;
+        out.write(WriteRequest::new(), &[Buf::from(CPR_REQUEST)], ())?;
 
-            let home: (isize, isize);
-            let mut keycode_parser = KeyCodeParser::default();
-            let mut report_buf = Buf::join(report.0);
-            keycode_parser.buffer(&report_buf.resize(report.1 as usize));
-            match keycode_parser.parse_keycode() {
-                Some(keycode) => {
-                    let semi = keycode.code.iter().position(|ch| ch == &b';').unwrap();
-                    let row = from_utf8(&keycode.code[2..semi]).unwrap().parse().unwrap();
-                    let r = keycode.code.iter().position(|ch| ch == &b'R').unwrap();
-                    let col = from_utf8(&keycode.code[semi + 1..r])
-                        .unwrap()
-                        .parse()
-                        .unwrap();
-                    home = (row, col);
-                }
-                None => {
-                    return Err(ProgramError::InitError(format!(
-                        "failed to parse cursor position report: {:?}",
-                        report_buf.as_bytes()
-                    )));
-                }
+        r#loop.run(RunMode::DEFAULT)?;
+
+        let mut keycode_parser = KeyCodeParser::default();
+        keycode_parser.buffer(&report);
+        let home = match keycode_parser.parse_keycode() {
+            Some(keycode) => {
+                let semi = keycode.code.iter().position(|ch| ch == &b';').unwrap();
+                let row = from_utf8(&keycode.code[2..semi])?.parse()?;
+                let r = keycode.code.iter().position(|ch| ch == &b'R').unwrap();
+                let col = from_utf8(&keycode.code[semi + 1..r])?.parse()?;
+
+                Ok((row, col))
             }
+            None => Err(ProgramError::InitError(format!(
+                "failed to parse cursor position report: {:?}",
+                report.as_bytes()
+            ))),
+        }?;
 
-            let messages = r#loop.new_check()?;
-            Self {
-                model,
-                context: Mutex::new(ProgramContext {
-                    width,
-                    height,
-                    home,
-                    cursor: home,
-                }),
-                r#loop,
-                inner: Mutex::new(ProgramInner {
-                    r#in,
-                    out,
-                    messages,
-                }),
-                updates: Default::default(),
-                keycode_parser,
-            }
-        };
-
-        if let Err(_) = result {
-            r#in.set_mode(Mode::NORMAL)?;
-        }
-
-        Ok(result?)
+        let messages = r#loop.new_check()?;
+        Ok(Self {
+            model,
+            context: Mutex::new(ProgramContext {
+                width,
+                height,
+                home,
+                cursor: home,
+            }),
+            r#loop,
+            inner: Mutex::new(ProgramInner {
+                r#in: *r#in,
+                out,
+                messages,
+            }),
+            updates: Default::default(),
+            keycode_parser,
+        })
     }
 
-    // TODO: better error handling then just panic? Could we return some error command and shutdown gracefully?
-    // NOTE: lock and send should not be recoverable
     pub fn run(&mut self) -> Result<(), ProgramError> {
+        self.inner.lock().unwrap().r#in.set_mode(Mode::RAW)?;
+
         let (txmessage, rxmessage) = channel::<Message>();
 
         let txmessage_keypress = txmessage.clone();
         match self.inner.lock() {
             Ok(mut inner) => {
                 inner.r#in.read_start(
-                    |_: &Handle, suggested_size| Some(Buf::new_with_capacity(suggested_size)),
-                    |_: &StreamHandle, nread, mut buf: Buf| {
+                    |_: &Handle, suggested_size| Some(Buf::new_with_len(suggested_size)),
+                    |_: &StreamHandle, nread, buf: Buf| {
                         match nread {
                             Ok(len) => {
-                                self.keycode_parser.buffer(&buf.resize(len as usize));
+                                self.keycode_parser
+                                    .buffer(&buf.as_ref()[..len as usize].to_buf());
                                 while let Some(keycode) = self.keycode_parser.parse_keycode() {
                                     txmessage_keypress.send(Message::Keypress(keycode)).unwrap();
                                 }
                             }
-                            Err(err) => panic!("{}", err),
+                            Err(err) => {
+                                txmessage_keypress.send(Message::from(err)).unwrap();
+                            }
                         };
                     },
                 )?;
@@ -174,15 +180,7 @@ impl<'a, M: Model> Program<'a, M> {
         match self.inner.lock() {
             Ok(mut inner) => {
                 inner.messages.start(|handle: &CheckHandle| {
-                    let mut terminating = false;
                     for message in rxmessage.try_iter() {
-                        match message {
-                            Message::Terminate => {
-                                terminating = true;
-                            }
-                            _ => (),
-                        }
-
                         self.updates.publish(
                             &mut self.model,
                             &self.context,
@@ -193,24 +191,20 @@ impl<'a, M: Model> Program<'a, M> {
                         );
                     }
 
-                    if terminating {
-                        self.inner.lock().unwrap().terminate();
-                    }
-
                     match (self.context.lock(), self.inner.lock()) {
                         (Ok(context), Ok(mut inner)) => {
                             if let Err(err) = inner.out.write(
                                 WriteRequest::new(),
                                 &[
-                                    Buf::new(format!(
+                                    Buf::from(format!(
                                         "\x1B[{};{}H",
                                         context.home.0, context.home.1,
                                     )),
-                                    Buf::new(self.model.view()),
+                                    Buf::from(self.model.view()),
                                 ],
                                 (),
                             ) {
-                                panic!("{}", err);
+                                txmessage_command.send(Message::from(err)).unwrap();
                             }
                         }
                         (Err(err), _) => panic!("{}", err),

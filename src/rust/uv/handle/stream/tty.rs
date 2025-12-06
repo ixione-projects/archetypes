@@ -154,6 +154,16 @@ impl Loop {
     }
 }
 
+// trait
+
+impl Default for TTYStream {
+    fn default() -> Self {
+        Self {
+            raw: Default::default(),
+        }
+    }
+}
+
 // inner
 
 impl FromInner<uv_tty_mode_t> for Mode {

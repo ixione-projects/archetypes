@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{error::Error, fmt::Debug};
 
 use crate::tea::KeyCode;
 
@@ -7,20 +7,23 @@ pub enum MessageType {
     Terminate = 0,
     Interrupt = 1,
     Keypress = 2,
+    Error = 3,
 }
 
 pub enum Message {
     Terminate,
     Interrupt,
     Keypress(KeyCode),
+    Error(Box<dyn Error>),
 }
 
 impl Message {
     pub fn r#type(&self) -> MessageType {
         match self {
-            Message::Terminate => MessageType::Terminate,
-            Message::Interrupt => MessageType::Interrupt,
-            Message::Keypress(_) => MessageType::Keypress,
+            Self::Terminate => MessageType::Terminate,
+            Self::Interrupt => MessageType::Interrupt,
+            Self::Keypress(_) => MessageType::Keypress,
+            Self::Error(_) => MessageType::Error,
         }
     }
 }
@@ -30,17 +33,17 @@ impl Debug for Message {
         match self {
             Self::Terminate => write!(f, "Terminate"),
             Self::Interrupt => write!(f, "Interrupt"),
-            Self::Keypress(arg0) => f.debug_tuple("Keypress").field(arg0).finish(),
+            Self::Keypress(keycode) => f.debug_tuple("Keypress").field(keycode).finish(),
+            Self::Error(err) => f.debug_tuple("Error").field(err).finish(),
         }
     }
 }
 
-impl Clone for Message {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Terminate => Self::Terminate,
-            Self::Interrupt => Self::Interrupt,
-            Self::Keypress(arg0) => Self::Keypress(arg0.clone()),
-        }
+impl<T> From<T> for Message
+where
+    T: Error + 'static,
+{
+    fn from(err: T) -> Self {
+        Message::Error(Box::new(err))
     }
 }
